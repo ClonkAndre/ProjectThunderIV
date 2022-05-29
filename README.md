@@ -19,7 +19,7 @@ More images can be found here: https://imgur.com/a/HggUfqa
 
 ## Other Links
 GTAForums: https://gtaforums.com/topic/982902-project-thunder/  
-GTAInside: https://www.gtainside.com/gta4/mods/178295-project-thunder/
+GTAInside: https://www.gtainside.com/gta4/mods/178295-project-thunder/  
 LCPDFR.com: https://www.lcpdfr.com/downloads/gta4mods/scripts/39769-project-thunder/  
 
 ## How to Contribute
