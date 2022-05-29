@@ -11,9 +11,9 @@ Project Thunder is a modification for Grand Theft Auto IV that aims to improve t
 More images can be found here: https://imgur.com/a/HggUfqa
 
 ## Other Links
-GTAForums:  
+GTAForums:  https://gtaforums.com/topic/982902-project-thunder/
 GTAInside:  
-LCPDFR.com:  
+LCPDFR.com:  https://www.lcpdfr.com/downloads/gta4mods/scripts/39769-project-thunder/
 
 ## How to Contribute
 ⚠ This project was built using a private SDK.  
