@@ -1,6 +1,13 @@
 # Project Thunder IV
 Project Thunder is a modification for Grand Theft Auto IV that aims to improve the thunderstorms of the game!
 
+## Features
+- Directional thunder sound.  
+- Customizable Echo / Indoor Compression effect on thunder sound.  
+- Customizable thunderbolt size, height and color.  
+- Explosion when thunderbolt hits the ground (Also customizable).  
+- And more!  
+
 ## Requirements
 - ASI Loader
 - GTA IV 1080, 1070 or 1040
