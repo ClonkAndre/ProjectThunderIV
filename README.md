@@ -14,9 +14,8 @@ Experience GTA IV like never before! With Project Thunder!
 - [ClonksCodingLib.GTAIV](https://github.com/ClonkAndre/ClonksCodingLib.GTAIV)
 
 ## Showcase
-![A video should be here showing how it looks like...](https://www.youtube.com/watch?v=Jgt9TXZT69U)  
-
-More images can be found here: https://imgur.com/a/HggUfqa
+Watch now on YouTube  
+[![What if GTA IV's thunder was realistic? | Mod Showcase](https://img.youtube.com/vi/Jgt9TXZT69U/0.jpg)](https://www.youtube.com/watch?v=Jgt9TXZT69U)
 
 ## Other Links
 GTAForums: https://gtaforums.com/topic/982902-project-thunder/  
