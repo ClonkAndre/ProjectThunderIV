@@ -14,6 +14,9 @@ namespace ProjectThunderIV.Classes
         public static bool ReloadTimeCycleWhenModUnloads;
         public static bool AllowLightningBoltsInCutscene;
 
+        // Networking
+        public static bool EnableNetworkSync;
+
         // Sound
         public static float GlobalSoundMultiplier;
         public static bool VolumeIsAllowedToGoAboveOne;
@@ -72,6 +75,9 @@ namespace ProjectThunderIV.Classes
 #endif
             ReloadTimeCycleWhenModUnloads = settings.GetBoolean("General", "ReloadTimeCycleWhenModUnloads", true);
             AllowLightningBoltsInCutscene = settings.GetBoolean("General", "AllowLightningBoltsInCutscene", true);
+
+            // Networking
+            EnableNetworkSync =             settings.GetBoolean("Networking", "EnableNetworkSync", true);
 
             // Sound
             GlobalSoundMultiplier =                         settings.GetFloat("Sound", "GlobalMultiplier", 1.0f);

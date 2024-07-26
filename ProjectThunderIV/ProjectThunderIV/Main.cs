@@ -118,9 +118,9 @@ namespace ProjectThunderIV
             SummonLightningbolt(playerPed.Matrix.Pos);
         }
 
-        private void AddDelayedCall(double seconds, Action actionToExecute)
+        private void AddDelayedCall(double seconds, Action actionToExecute, bool canExecuteWhenUninitializing)
         {
-            delayedCalls.Add(new DelayedCall(DateTime.UtcNow.AddSeconds(seconds), actionToExecute));
+            delayedCalls.Add(new DelayedCall(DateTime.UtcNow.AddSeconds(seconds), actionToExecute, canExecuteWhenUninitializing));
         }
 
         private void LoadSoundConfigurations()
@@ -300,7 +300,8 @@ namespace ProjectThunderIV
         private void SummonLightningbolt(Vector3 spawnPosition, bool canHaveBranches = true, bool growFromGroundUp = false, int overrideLightningSize = -1, Vector3 overrideBoltColor = default(Vector3), Vector3 overrideSkyColor = default(Vector3), float overrideSkyBrightness = -1f, bool wasCalledFromAnotherScript = false)
         {
             // Tell network clients to spawn a lightning bolt
-            UpdateNetworkStruct(true, spawnPosition, canHaveBranches, growFromGroundUp, overrideLightningSize, overrideBoltColor, overrideSkyColor, overrideSkyBrightness);
+            if (ModSettings.EnableNetworkSync)
+                UpdateNetworkStruct(true, spawnPosition, canHaveBranches, growFromGroundUp, overrideLightningSize, overrideBoltColor, overrideSkyColor, overrideSkyBrightness);
 
             // If there is a lightning bolt added already, reset its size to default to make it look like this lightning bolt got new power
             if (!wasCalledFromAnotherScript)
@@ -476,8 +477,9 @@ namespace ProjectThunderIV
             // Play thunder sound from the middle of the lightning bolt
             PlayThunderSound(lightningBolt, spawnPosition);
 
-            // Tell network clients to reset their state after 3 seconds
-            AddDelayedCall(2.25d, () => UpdateNetworkStruct(false, Vector3.Zero, false, false, 0, Vector3.Zero, Vector3.Zero, 0f));
+            // Tell network clients to reset their state after 2.25 seconds
+            if (ModSettings.EnableNetworkSync)
+                AddDelayedCall(2.25d, () => UpdateNetworkStruct(false, Vector3.Zero, false, false, 0, Vector3.Zero, Vector3.Zero, 0f), true);
         }
         private void BuildBranches(LightningBolt lightningBolt)
         {
@@ -566,12 +568,12 @@ namespace ProjectThunderIV
                 if (secondsDelay < 1d)
                 {
                     // Just add it as a delayed call too but invoke it instantly because this can crash the game when called from the rendering thread and it's trying to request the "amb@shock_events" animations.
-                    AddDelayedCall(0d, actionToExecute);
+                    AddDelayedCall(0d, actionToExecute, false);
                 }
                 else
                 {
                     // This will delay the sound of the thunder depending on the distance to the player
-                    AddDelayedCall(secondsDelay, actionToExecute);
+                    AddDelayedCall(secondsDelay, actionToExecute, false);
                 }
             }
         }
@@ -608,6 +610,28 @@ namespace ProjectThunderIV
 
             if (logDebugNetMessages)
                 Logging.Log("Updated network struct.");
+        }
+        
+        private void ProcessDelayedCalls(bool calledFromUninitializeEvent)
+        {
+            DateTime utcNow = DateTime.UtcNow;
+
+            for (int i = 0; i < delayedCalls.Count; i++)
+            {
+                DelayedCall delayedCall = delayedCalls[i];
+
+                if (calledFromUninitializeEvent && !delayedCall.CanExecuteWhenUninitializing)
+                {
+                    delayedCalls.RemoveAt(i);
+                    continue;
+                }
+
+                if (utcNow > delayedCall.ExecuteAt)
+                {
+                    delayedCall.ActionToExecute?.Invoke();
+                    delayedCalls.RemoveAt(i);
+                }
+            }
         }
         #endregion
 
@@ -718,6 +742,9 @@ namespace ProjectThunderIV
 
         private void Main_Uninitialize(object sender, EventArgs e)
         {
+            // Forcefully go through delayed calls list to reset state on client machines
+            ProcessDelayedCalls(true);
+
             RAGE.OnWindowFocusChanged -= RAGE_OnWindowFocusChanged;
 
             Bass.Free();
@@ -727,6 +754,8 @@ namespace ProjectThunderIV
             soundConfigurations = null;
             lightningBolts.Clear();
             lightningBolts = null;
+            delayedCalls.Clear();
+            delayedCalls = null;
 
             // Reload timecycle if allowed
             if (ModSettings.ReloadTimeCycleWhenModUnloads)
@@ -974,6 +1003,10 @@ namespace ProjectThunderIV
                 ImGuiIV.CheckBox("AllowLightningBoltsInCutscene", ref ModSettings.AllowLightningBoltsInCutscene);
 
                 ImGuiIV.Spacing();
+                ImGuiIV.Text("Networking");
+                ImGuiIV.CheckBox("EnableNetworkSync", ref ModSettings.EnableNetworkSync);
+
+                ImGuiIV.Spacing();
                 ImGuiIV.Text("Sound");
                 ImGuiIV.DragFloat("GlobalSoundMultiplier", ref ModSettings.GlobalSoundMultiplier, 0.01f);
                 ImGuiIV.CheckBox("VolumeIsAllowedToGoAboveOne", ref ModSettings.VolumeIsAllowedToGoAboveOne);
@@ -1125,7 +1158,7 @@ namespace ProjectThunderIV
                 return;
 
             // Is network game running and the current player is not the host then do not spawn random lightning as the host should be able to spawn it
-            if (IVNetwork.IsNetworkGameRunning() && !IVNetwork.IsHostingGame)
+            if (IVNetwork.IsNetworkGameRunning() && !IVNetwork.IsHostingGame && ModSettings.EnableNetworkSync)
                 return;
 
             eWeather previousWeather = (eWeather)IVWeather.OldWeatherType;
@@ -1195,7 +1228,7 @@ namespace ProjectThunderIV
                     networkStructure = Marshal.PtrToStructure<LightningBoltSummonConfig>(networkStructureHandle.AddrOfPinnedObject());
 
                     // Check if can spawn lightning bolt
-                    if (networkStructure.SpawnNow && !IVNetwork.IsHostingGame)
+                    if (networkStructure.SpawnNow && !IVNetwork.IsHostingGame && ModSettings.EnableNetworkSync)
                     {
                         if (logDebugNetMessages)
                             Logging.Log("Received spawn lightning command!");
@@ -1273,19 +1306,8 @@ namespace ProjectThunderIV
                 }
             }
 
-            DateTime utcNow = DateTime.UtcNow;
-
             // Go through delayed call list
-            for (int i = 0; i < delayedCalls.Count; i++)
-            {
-                DelayedCall delayedCall = delayedCalls[i];
-
-                if (utcNow > delayedCall.ExecuteAt)
-                {
-                    delayedCall.ActionToExecute?.Invoke();
-                    delayedCalls.RemoveAt(i);
-                }
-            }
+            ProcessDelayedCalls(false);
 
             // Update 3D stuff for Bass
             Bass.Set3DFactors(1.0f, 0.0045f, 0.0f);
