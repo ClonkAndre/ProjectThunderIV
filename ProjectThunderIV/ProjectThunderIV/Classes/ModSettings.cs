@@ -38,6 +38,7 @@ namespace ProjectThunderIV.Classes
         // Light
         public static float LightIntensity;
         public static float LightRange;
+        public static bool EnableLightShadow;
 
         // Sky
         public static float AdditionalCloudBrightness;
@@ -96,6 +97,7 @@ namespace ProjectThunderIV.Classes
             // Light
             LightIntensity =                settings.GetFloat("Light", "Intensity", 0.11f);
             LightRange =                    settings.GetFloat("Light", "Range", 300f);
+            EnableLightShadow =             settings.GetBoolean("Light", "EnableLightShadow", true);
 
             // Sky
             AdditionalCloudBrightness =     settings.GetFloat("Sky", "AdditionalCloudBrightness", 20f);

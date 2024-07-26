@@ -1,10 +1,13 @@
 ﻿using System.Numerics;
+using System.Runtime.InteropServices;
 
 namespace ProjectThunderIV.API
 {
-    internal class LightningBoltSummonConfig
+    [StructLayout(LayoutKind.Sequential)]
+    public class LightningBoltSummonConfig
     {
         #region Variables
+        public bool SpawnNow;
         public Vector3 SpawnPosition;
         public bool CanHaveBranches;
         public bool GrowFromGroundUp;
@@ -23,6 +26,7 @@ namespace ProjectThunderIV.API
             Vector3 overrideSkyColor,
             float overrideSkyBrightness)
         {
+            SpawnNow = false;
             SpawnPosition = spawnPosition;
             CanHaveBranches = canHaveBranches;
             GrowFromGroundUp = growFromGroundUp;
@@ -33,6 +37,7 @@ namespace ProjectThunderIV.API
         }
         public LightningBoltSummonConfig(Vector3 spawnPosition)
         {
+            SpawnNow = false;
             SpawnPosition = spawnPosition;
             CanHaveBranches = true;
             GrowFromGroundUp = false;
@@ -43,7 +48,7 @@ namespace ProjectThunderIV.API
         }
         public LightningBoltSummonConfig()
         {
-            
+            SpawnNow = false;
         }
         #endregion
     }

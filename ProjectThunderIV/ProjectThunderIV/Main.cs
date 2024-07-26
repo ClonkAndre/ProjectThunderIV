@@ -4,6 +4,7 @@ using System.Drawing;
 using System.IO;
 using System.Linq;
 using System.Numerics;
+using System.Runtime.InteropServices;
 
 using ManagedBass;
 using Newtonsoft.Json;
@@ -20,6 +21,7 @@ namespace ProjectThunderIV
 {
     public class Main : Script
     {
+
         #region Variables
         private List<DelayedCall> delayedCalls;
         private List<SoundConfiguration> soundConfigurations;
@@ -65,6 +67,12 @@ namespace ProjectThunderIV
         private float averageFadeOutSpeed = 1.0f;
         private bool wasAnythingCloudRelatedChanged;
         private bool hasFadingReachedTargetCloudValues;
+
+        // Network
+        private LightningBoltSummonConfig networkStructure;
+        private GCHandle networkStructureHandle;
+        private bool wasSpawned;
+        private bool logDebugNetMessages;
         #endregion
 
         #region Methods
@@ -291,6 +299,9 @@ namespace ProjectThunderIV
         }
         private void SummonLightningbolt(Vector3 spawnPosition, bool canHaveBranches = true, bool growFromGroundUp = false, int overrideLightningSize = -1, Vector3 overrideBoltColor = default(Vector3), Vector3 overrideSkyColor = default(Vector3), float overrideSkyBrightness = -1f, bool wasCalledFromAnotherScript = false)
         {
+            // Tell network clients to spawn a lightning bolt
+            UpdateNetworkStruct(true, spawnPosition, canHaveBranches, growFromGroundUp, overrideLightningSize, overrideBoltColor, overrideSkyColor, overrideSkyBrightness);
+
             // If there is a lightning bolt added already, reset its size to default to make it look like this lightning bolt got new power
             if (!wasCalledFromAnotherScript)
             {
@@ -332,7 +343,7 @@ namespace ProjectThunderIV
             lastLightningPosition = spawnPosition;
 
             // Find peds with umbrellas and maybe spawn the lightning bolt there
-            if (!wasCalledFromAnotherScript && ModSettings.EnableUmbrellaDanger)
+            if (!wasCalledFromAnotherScript && ModSettings.EnableUmbrellaDanger && !IVNetwork.IsNetworkGameRunning())
             {
                 uint umbrellaModel1 = RAGE.AtStringHash("ec_char_brollie");
                 uint umbrellaModel2 = RAGE.AtStringHash("ec_char_brollie02");
@@ -464,6 +475,9 @@ namespace ProjectThunderIV
 
             // Play thunder sound from the middle of the lightning bolt
             PlayThunderSound(lightningBolt, spawnPosition);
+
+            // Tell network clients to reset their state after 3 seconds
+            AddDelayedCall(2.25d, () => UpdateNetworkStruct(false, Vector3.Zero, false, false, 0, Vector3.Zero, Vector3.Zero, 0f));
         }
         private void BuildBranches(LightningBolt lightningBolt)
         {
@@ -513,7 +527,7 @@ namespace ProjectThunderIV
                     currentSoundStreams.Add(stream);
 
                     // Loop through all peds in the world and maybe make them react to the thunder sound if allowed
-                    if (ModSettings.AllowPedReactions)
+                    if (ModSettings.AllowPedReactions && !IVNetwork.IsNetworkGameRunning())
                     {
                         // Request shocking event animations
                         REQUEST_ANIMS("amb@shock_events");
@@ -560,6 +574,40 @@ namespace ProjectThunderIV
                     AddDelayedCall(secondsDelay, actionToExecute);
                 }
             }
+        }
+
+        private void CleanupNetworkStuff()
+        {
+            // Free allocated network memory
+            if (networkStructureHandle.IsAllocated)
+                networkStructureHandle.Free();
+            networkStructure = null;
+            wasSpawned = false;
+        }
+        private void UpdateNetworkStruct(bool spawnNow, Vector3 spawnPosition, bool canHaveBranches, bool growFromGroundUp, int overrideLightningSize, Vector3 overrideBoltColor, Vector3 overrideSkyColor, float overrideSkyBrightness)
+        {
+            if (!IVNetwork.IsNetworkGameRunning())
+                return;
+            if (!IVNetwork.IsHostingGame)
+                return;
+            if (!networkStructureHandle.IsAllocated)
+                return;
+            if (networkStructure == null)
+                return;
+
+            networkStructure.SpawnNow = spawnNow;
+            networkStructure.SpawnPosition = spawnPosition;
+            networkStructure.CanHaveBranches = canHaveBranches;
+            networkStructure.GrowFromGroundUp = growFromGroundUp;
+            networkStructure.OverrideLightningSize = overrideLightningSize;
+            networkStructure.OverrideBoltColor = overrideBoltColor;
+            networkStructure.OverrideSkyColor = overrideSkyColor;
+            networkStructure.OverrideSkyBrightness = overrideSkyBrightness;
+            
+            Marshal.StructureToPtr(networkStructure, networkStructureHandle.AddrOfPinnedObject(), false);
+
+            if (logDebugNetMessages)
+                Logging.Log("Updated network struct.");
         }
         #endregion
 
@@ -626,7 +674,7 @@ namespace ProjectThunderIV
             scriptedLighting = new List<ScriptedLightning>();
             lightningBolts = new List<LightningBolt>(6); // Initialize with starting size 6
             currentSoundStreams = new List<SoundStream>(6); // Initialize with starting size 6
-
+            
             WaitTickInterval = 1250;
 
             RAGE.OnWindowFocusChanged += RAGE_OnWindowFocusChanged;
@@ -683,6 +731,8 @@ namespace ProjectThunderIV
             // Reload timecycle if allowed
             if (ModSettings.ReloadTimeCycleWhenModUnloads)
                 IVTimeCycle.Initialise();
+
+            CleanupNetworkStuff();
         }
         private void Main_Initialized(object sender, EventArgs e)
         {
@@ -814,6 +864,9 @@ namespace ProjectThunderIV
             {
                 if (ImGuiIV.BeginTabItem("Debug"))
                 {
+                    ImGuiIV.SeparatorText("General Debug");
+                    ImGuiIV.CheckBox("Log Net Messages", ref logDebugNetMessages);
+
                     ImGuiIV.SeparatorText("Lightning Debug");
                     ImGuiIV.Text("Is player above dangerous height: {0}", IsPlayerAboveDangerousHeight());
                     ImGuiIV.Text("Last lightning size: {0}", lastLightningSize);
@@ -947,6 +1000,7 @@ namespace ProjectThunderIV
                 ImGuiIV.Text("Light");
                 ImGuiIV.DragFloat("LightIntensity", ref ModSettings.LightIntensity, 0.001f);
                 ImGuiIV.DragFloat("LightRange", ref ModSettings.LightRange, 0.1f);
+                ImGuiIV.CheckBox("EnableLightShadow", ref ModSettings.EnableLightShadow);
 
                 ImGuiIV.Spacing();
                 ImGuiIV.Text("Sky");
@@ -1070,6 +1124,10 @@ namespace ProjectThunderIV
             if (!HAS_CUTSCENE_FINISHED() && !ModSettings.AllowLightningBoltsInCutscene)
                 return;
 
+            // Is network game running and the current player is not the host then do not spawn random lightning as the host should be able to spawn it
+            if (IVNetwork.IsNetworkGameRunning() && !IVNetwork.IsHostingGame)
+                return;
+
             eWeather previousWeather = (eWeather)IVWeather.OldWeatherType;
             eWeather currentWeather = (eWeather)IVWeather.NewWeatherType;
 
@@ -1114,6 +1172,59 @@ namespace ProjectThunderIV
             IVCam finalCam = IVCamera.TheFinalCam;
             IVPed playerPed = IVPed.FromUIntPtr(IVPlayerInfo.FindThePlayerPed());
             playerPos = playerPed.Matrix.Pos;
+
+            // Do network stuff
+            if (IVNetwork.IsNetworkGameRunning())
+            {
+                // Register network struct
+                if (!networkStructureHandle.IsAllocated && networkStructure == null)
+                {
+                    networkStructure = new LightningBoltSummonConfig();
+
+                    int size = Marshal.SizeOf(networkStructure);
+                    byte[] buffer = new byte[size];
+
+                    networkStructureHandle = GCHandle.Alloc(buffer, GCHandleType.Pinned);
+
+                    Marshal.StructureToPtr(networkStructure, networkStructureHandle.AddrOfPinnedObject(), false);
+                    REGISTER_HOST_BROADCAST_VARIABLES(networkStructureHandle.AddrOfPinnedObject(), size / 4, 29);
+                }
+                else
+                {
+                    // Get host value
+                    networkStructure = Marshal.PtrToStructure<LightningBoltSummonConfig>(networkStructureHandle.AddrOfPinnedObject());
+
+                    // Check if can spawn lightning bolt
+                    if (networkStructure.SpawnNow && !IVNetwork.IsHostingGame)
+                    {
+                        if (logDebugNetMessages)
+                            Logging.Log("Received spawn lightning command!");
+
+                        if (!wasSpawned)
+                        {
+                            // Summon lightning bolt but only if the player is not the host
+                            SummonLightningbolt(networkStructure.SpawnPosition,
+                                networkStructure.CanHaveBranches,
+                                networkStructure.GrowFromGroundUp,
+                                networkStructure.OverrideLightningSize,
+                                networkStructure.OverrideBoltColor,
+                                networkStructure.OverrideSkyColor,
+                                networkStructure.OverrideSkyBrightness,
+                                false);
+
+                            wasSpawned = true;
+                        }
+                    }
+                    else
+                    {
+                        wasSpawned = false;
+                    }
+                }
+            }
+            else
+            {
+                CleanupNetworkStuff();
+            }
 
             // Pause current active sound stream if pause menu is active
             if (IS_PAUSE_MENU_ACTIVE())
@@ -1288,7 +1399,7 @@ namespace ProjectThunderIV
                     if (point != Vector3.Zero)
                     {
                         DRAW_CORONA(point, lightningBolt.CoronaSize, 0, 0f, boltColor);
-                        IVShadows.StoreStaticShadow(true, point, boltColor, ModSettings.LightIntensity, ModSettings.LightRange);
+                        IVShadows.StoreStaticShadow(ModSettings.EnableLightShadow, point, boltColor, ModSettings.LightIntensity, ModSettings.LightRange);
                     }
                 }
 
@@ -1306,7 +1417,7 @@ namespace ProjectThunderIV
                             if (point != Vector3.Zero)
                             {
                                 DRAW_CORONA(point, lightningBolt.CoronaSize, 0, 0f, boltColor);
-                                IVShadows.StoreStaticShadow(true, point, boltColor, ModSettings.LightIntensity, ModSettings.LightRange);
+                                IVShadows.StoreStaticShadow(ModSettings.EnableLightShadow, point, boltColor, ModSettings.LightIntensity, ModSettings.LightRange);
                             }
                         }
                     }
