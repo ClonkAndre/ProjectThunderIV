@@ -6,16 +6,18 @@ namespace ProjectThunderIV.Classes
     {
         #region Variables
         public Action ActionToExecute;
-        public DateTime ExecuteAt;
+        public TimeSpan ExecuteIn;
         public bool CanExecuteWhenUninitializing;
+        public string Tag;
         #endregion
 
         #region Constructor
-        public DelayedCall(DateTime executeAt, Action a, bool canExecuteWhenUninitializing)
+        public DelayedCall(TimeSpan executeIn, Action a, bool canExecuteWhenUninitializing, string tag)
         {
             ActionToExecute = a;
-            ExecuteAt = executeAt;
+            ExecuteIn = executeIn;
             CanExecuteWhenUninitializing = canExecuteWhenUninitializing;
+            Tag = tag;
         }
         #endregion
     }

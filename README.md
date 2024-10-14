@@ -5,8 +5,9 @@ Experience GTA IV like never before! With Project Thunder!
 ## Features
 - Directional thunder sound.  
 - Customizable lightning bolt size, height and color.  
-- Explosion when lightning bolts hit the ground (Also customizable).
-- Ped reactions.
+- Citywide Blackouts.  
+- Explosion when lightning bolts hit the ground (Also customizable).  
+- Ped reactions.  
 - And much more!  
 
 ## Requirements

@@ -8,6 +8,7 @@ namespace ProjectThunderIV.Classes
         #region Variables
         public Vector3[] Points;
         public List<LightningBoltBranch> Branches;
+        public Vector3 GroundPosition;
 
         public float StartingCoronaSize;
         public float CoronaSize;
