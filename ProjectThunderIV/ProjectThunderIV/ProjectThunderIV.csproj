@@ -21,6 +21,7 @@
     <DefineConstants>DEBUG;TRACE</DefineConstants>
     <ErrorReport>prompt</ErrorReport>
     <WarningLevel>4</WarningLevel>
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
   </PropertyGroup>
   <PropertyGroup Condition=" '$(Configuration)|$(Platform)' == 'Release|AnyCPU' ">
     <DebugType>pdbonly</DebugType>
@@ -30,14 +31,21 @@
     <ErrorReport>prompt</ErrorReport>
     <WarningLevel>4</WarningLevel>
   </PropertyGroup>
+  <PropertyGroup Condition="'$(Configuration)|$(Platform)' == 'Preview|AnyCPU'">
+    <OutputPath>bin\Preview\</OutputPath>
+    <DefineConstants>TRACE;PREVIEW</DefineConstants>
+    <Optimize>true</Optimize>
+    <DebugType>pdbonly</DebugType>
+    <PlatformTarget>AnyCPU</PlatformTarget>
+    <LangVersion>7.3</LangVersion>
+    <ErrorReport>prompt</ErrorReport>
+  </PropertyGroup>
   <ItemGroup>
-    <Reference Include="ClonksCodingLib.GTAIV, Version=1.4.8549.40239, Culture=neutral, processorArchitecture=MSIL">
-      <SpecificVersion>False</SpecificVersion>
-      <HintPath>..\..\..\ClonksCodingLib.GTAIV\ClonksCodingLib.GTAIV\ClonksCodingLib.GTAIV\bin\x86\Release\ClonksCodingLib.GTAIV.dll</HintPath>
+    <Reference Include="ClonksCodingLib.GTAIV, Version=1.9.0.38745, Culture=neutral, processorArchitecture=x86">
+      <HintPath>..\packages\ClonksCodingLib.GTAIV.1.9.0.38745\lib\net472\ClonksCodingLib.GTAIV.dll</HintPath>
     </Reference>
-    <Reference Include="IVSDKDotNetWrapper, Version=1.4.0.0, Culture=neutral, processorArchitecture=x86">
-      <SpecificVersion>False</SpecificVersion>
-      <HintPath>..\..\..\IVSDKDotNet\Release\IVSDKDotNetWrapper.dll</HintPath>
+    <Reference Include="IVSDKDotNetWrapper, Version=1.7.0.0, Culture=neutral, processorArchitecture=x86">
+      <HintPath>..\packages\IVSDKDotNetWrapper.1.7.0\lib\net472\IVSDKDotNetWrapper.dll</HintPath>
     </Reference>
     <Reference Include="ManagedBass, Version=3.1.1.0, Culture=neutral, processorArchitecture=MSIL">
       <HintPath>..\packages\ManagedBass.3.1.1\lib\net45\ManagedBass.dll</HintPath>
@@ -53,13 +61,17 @@
   </ItemGroup>
   <ItemGroup>
     <Compile Include="API\LightningBoltSummonConfig.cs" />
+    <Compile Include="Classes\BlackoutSystem.cs" />
     <Compile Include="Classes\Consts.cs" />
     <Compile Include="Classes\DelayedCall.cs" />
+    <Compile Include="Classes\ElectricalSubstation.cs" />
     <Compile Include="Classes\Enums.cs" />
     <Compile Include="Classes\LightningBolt.cs" />
     <Compile Include="Classes\LightningBoltBranch.cs" />
     <Compile Include="Classes\Logging.cs" />
+    <Compile Include="Classes\Network\NetworkSyncStruct.cs" />
     <Compile Include="Classes\ScriptedLightning.cs" />
+    <Compile Include="Extensions\ListExtensions.cs" />
     <Compile Include="Extensions\VectorExtensions.cs" />
     <Compile Include="Main.cs" />
     <Compile Include="Classes\ModSettings.cs" />

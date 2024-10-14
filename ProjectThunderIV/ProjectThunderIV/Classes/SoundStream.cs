@@ -12,16 +12,27 @@ namespace ProjectThunderIV.Classes
         public int Handle;
         private int reverbEffectHandle;
         private int compressorEffectHandle;
+
         public float VolumeBoost;
         public float TargetVolume;
+
         public Vector3 Position;
+
+        public bool KeepAlive;
         #endregion
 
         #region Constructor
+        public SoundStream(int handle, float volumeBoost, bool keepAlive)
+        {
+            Handle = handle;
+            VolumeBoost = volumeBoost;
+            KeepAlive = keepAlive;
+        }
         public SoundStream(int handle, float volumeBoost)
         {
             Handle = handle;
             VolumeBoost = volumeBoost;
+            KeepAlive = false;
         }
         #endregion
 
@@ -91,6 +102,11 @@ namespace ProjectThunderIV.Classes
         #endregion
 
         #region Functions
+        public bool Free()
+        {
+            return Bass.StreamFree(Handle);
+        }
+
         public bool Play(bool restart = false)
         {
             return Bass.ChannelPlay(Handle, restart);

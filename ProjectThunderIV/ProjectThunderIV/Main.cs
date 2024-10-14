@@ -6,15 +6,21 @@ using System.Linq;
 using System.Numerics;
 using System.Runtime.InteropServices;
 
+#if PREVIEW
+using System.Reflection;
+#endif
+
 using ManagedBass;
 using Newtonsoft.Json;
 using CCL.GTAIV;
 
 using ProjectThunderIV.API;
 using ProjectThunderIV.Classes;
+using ProjectThunderIV.Classes.Network;
 
 using IVSDKDotNet;
 using IVSDKDotNet.Enums;
+using IVSDKDotNet.Hooking;
 using static IVSDKDotNet.Native.Natives;
 
 namespace ProjectThunderIV
@@ -22,15 +28,25 @@ namespace ProjectThunderIV
     public class Main : Script
     {
 
+        #region Consts
+        private const string CHARS = "!%&=?*'_:;>^°+#-.,´ß@abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789";
+        #endregion
+
         #region Variables
+        internal static Main Instance;
+
+        // Lists
+        private Queue<Action> mainThreadQueue;
         private List<DelayedCall> delayedCalls;
         private List<SoundConfiguration> soundConfigurations;
         private List<ScriptedLightning> scriptedLighting;
         private List<LightningBolt> lightningBolts;
         private List<SoundStream> currentSoundStreams;
-        private Vector3 playerPos;
+        private List<ElectricalSubstation> electricalSubstations;
 
-        public bool MenuOpen;
+        // Pools
+        private IVPool pedPool;
+        private IVPool vehiclePool;
 
         // Test Thunder
         private bool debugKeysEnabled;
@@ -54,6 +70,16 @@ namespace ProjectThunderIV
         private int lastLightningSize;
         private bool didLastLightningHitGround;
         private Vector3 lastLightningPosition;
+        private bool interceptAddSceneLightsCall;
+        private bool interceptOnRenderCoronaCall;
+        private bool interceptOnGetTrafficLightStateCalls;
+        private bool nextLightningBoltWillCauseBlackout;
+
+        // Blackout
+        private int blackoutActiveTime;
+        private TimeSpan nextAllowedBlackoutPhoneCall;
+        private SoundStream blackoutSoundStream;
+        private SoundStream wdSfxSoundStream;
 
         // Timecycle Cloud Stuff
         private IVTimeCycleParams lightningTimecycParams;
@@ -69,10 +95,18 @@ namespace ProjectThunderIV
         private bool hasFadingReachedTargetCloudValues;
 
         // Network
-        private LightningBoltSummonConfig networkStructure;
-        private GCHandle networkStructureHandle;
+        private NetworkSyncStruct networkSyncStruct;
+        private GCHandle networkSyncStructHandle;
+        
         private bool wasSpawned;
         private bool logDebugNetMessages;
+
+        // Other
+        private IVPed playerPed;
+        private Vector3 playerPos;
+
+        public bool MenuOpen;
+        private bool showRandomChars;
         #endregion
 
         #region Methods
@@ -86,6 +120,94 @@ namespace ProjectThunderIV
             else
                 Logging.LogWarning("Could not reload the settings file of Project Thunder! File might not exists.");
         }
+        private void LoadSoundConfigurations()
+        {
+            try
+            {
+                string fileName = string.Format("{0}\\{1}.json", ScriptResourceFolder, ModSettings.SoundPackToUse);
+
+                if (!File.Exists(fileName))
+                {
+                    Logging.LogWarning("Could not find sound pack configuration file {0}! There will be no sound with thunder.", ModSettings.SoundPackToUse);
+                    return;
+                }
+
+                if (soundConfigurations != null)
+                    soundConfigurations.Clear();
+
+                soundConfigurations = JsonConvert.DeserializeObject<List<SoundConfiguration>>(File.ReadAllText(fileName));
+
+                if (soundConfigurations.Count == 0)
+                    Logging.LogWarning("Loaded 0 sound configurations! There will be no sound with thunder.");
+                else
+                    Logging.Log("Loaded {0} sound configurations!", soundConfigurations.Count);
+
+            }
+            catch (Exception ex)
+            {
+                Logging.LogError("An error occured while trying to load sound configurations! There will be no sound with thunder. Details: {0}", ex);
+            }
+        }
+        private void LoadElectricalSubstations()
+        {
+            try
+            {
+                string fileName = string.Format("{0}\\Data\\ElectricalSubstations.json", ScriptResourceFolder);
+
+                if (!File.Exists(fileName))
+                {
+                    Logging.LogWarning("Could not find ElectricalSubstations.json file! Blackout feature might not be available.");
+                    return;
+                }
+
+                if (electricalSubstations != null)
+                    electricalSubstations.Clear();
+
+                electricalSubstations = JsonConvert.DeserializeObject<List<ElectricalSubstation>>(File.ReadAllText(fileName));
+
+                if (electricalSubstations.Count == 0)
+                    Logging.LogWarning("Loaded 0 sound configurations! Blackout feature might not be available.");
+                else
+                    Logging.Log("Loaded {0} electrical substation positions!", electricalSubstations.Count);
+
+            }
+            catch (Exception ex)
+            {
+                Logging.LogError("An error occured while trying to load electrical substation positions! Blackout feature might not be available. Details: {0}", ex);
+            }
+        }
+        private void LoadScriptedLightning()
+        {
+            try
+            {
+                string fileName = string.Format("{0}\\Data\\ScriptedLightning.json", ScriptResourceFolder);
+
+                if (!File.Exists(fileName))
+                    return;
+
+                scriptedLighting.Clear();
+                scriptedLighting = JsonConvert.DeserializeObject<List<ScriptedLightning>>(File.ReadAllText(fileName));
+                Logging.Log("Loaded {0} scripted lightnings!", scriptedLighting.Count);
+            }
+            catch (Exception ex)
+            {
+                Logging.LogError("An error occured while trying to load scripted lightning! Details: {0}", ex);
+            }
+        }
+        private void SaveScriptedLightning()
+        {
+            try
+            {
+                string fileName = string.Format("{0}\\Data\\ScriptedLightning.json", ScriptResourceFolder);
+                File.WriteAllText(fileName, JsonConvert.SerializeObject(scriptedLighting, Formatting.Indented));
+                Logging.Log("Saved {0} scripted lightnings!", scriptedLighting.Count);
+            }
+            catch (Exception ex)
+            {
+                Logging.LogError("An error occured while trying to save scripted lightning! Details: {0}", ex);
+            }
+        }
+
         private void ReloadSoundPackCommand(string[] args)
         {
             LoadSoundConfigurations();
@@ -118,72 +240,63 @@ namespace ProjectThunderIV
             SummonLightningbolt(playerPed.Matrix.Pos);
         }
 
-        private void AddDelayedCall(double seconds, Action actionToExecute, bool canExecuteWhenUninitializing)
+        private void ProcessDelayedCalls(bool calledFromUninitializeEvent)
         {
-            delayedCalls.Add(new DelayedCall(DateTime.UtcNow.AddSeconds(seconds), actionToExecute, canExecuteWhenUninitializing));
-        }
+            if (CLR.CLRBridge.IsShuttingDown)
+                return;
 
-        private void LoadSoundConfigurations()
-        {
-            try
+            TimeSpan currentTime = GetCurrentGameTime();
+
+            for (int i = 0; i < delayedCalls.Count; i++)
             {
-                string fileName = string.Format("{0}\\{1}.json", ScriptResourceFolder, ModSettings.SoundPackToUse);
+                DelayedCall delayedCall = delayedCalls[i];
 
-                if (!File.Exists(fileName))
+                if (calledFromUninitializeEvent && !delayedCall.CanExecuteWhenUninitializing)
                 {
-                    Logging.LogWarning("Could not find sound pack configuration file {0}! There will be no sound with thunder.", ModSettings.SoundPackToUse);
-                    return;
+                    delayedCalls.RemoveAt(i);
+                    continue;
                 }
 
-                if (soundConfigurations != null)
-                    soundConfigurations.Clear();
-
-                soundConfigurations = JsonConvert.DeserializeObject<List<SoundConfiguration>>(File.ReadAllText(fileName));
-
-                if (soundConfigurations.Count == 0)
-                    Logging.LogWarning("Loaded 0 sound configurations! There will be no sound with thunder.");
-                else
-                    Logging.Log("Loaded {0} sound configurations!", soundConfigurations.Count);
-
-            }
-            catch (Exception ex)
-            {
-                Logging.LogError("An error occured while trying to load sound configurations! There will be no sound with thunder. Details: {0}", ex);
+                if (currentTime > delayedCall.ExecuteIn)
+                {
+                    delayedCall.ActionToExecute?.Invoke();
+                    delayedCalls.RemoveAt(i);
+                }
             }
         }
-        private void LoadScriptedLightning()
+        public void AddDelayedCall(TimeSpan executeIn, Action actionToExecute, bool canExecuteWhenUninitializing, string tag)
         {
-            try
-            {
-                string fileName = string.Format("{0}\\ScriptedLightning.json", ScriptResourceFolder);
+            TimeSpan currentTime = TimeSpan.Zero;
 
-                if (!File.Exists(fileName))
-                    return;
-
-                scriptedLighting.Clear();
-                scriptedLighting = JsonConvert.DeserializeObject<List<ScriptedLightning>>(File.ReadAllText(fileName));
-                Logging.Log("Loaded {0} scripted lightnings!", scriptedLighting.Count);
-            }
-            catch (Exception ex)
+            if (IVNetwork.IsNetworkGameRunning())
             {
-                Logging.LogError("An error occured while trying to load scripted lightning! Details: {0}", ex);
+                // This timer is in sync with all clients on the network
+                GET_NETWORK_TIMER(out int t);
+                currentTime = TimeSpan.FromMilliseconds(t);
             }
+            else
+            {
+                GET_GAME_TIMER(out uint t);
+                currentTime = TimeSpan.FromMilliseconds(t);
+            }
+
+            delayedCalls.Add(new DelayedCall(currentTime + executeIn, actionToExecute, canExecuteWhenUninitializing, tag));
         }
-        private void SaveScriptedLightning()
+
+        public void SetInterceptAddSceneLightsCall(bool set)
         {
-            try
-            {
-                string fileName = string.Format("{0}\\ScriptedLightning.json", ScriptResourceFolder);
-                File.WriteAllText(fileName, JsonConvert.SerializeObject(scriptedLighting, Formatting.Indented));
-                Logging.Log("Saved {0} scripted lightnings!", scriptedLighting.Count);
-            }
-            catch (Exception ex)
-            {
-                Logging.LogError("An error occured while trying to save scripted lightning! Details: {0}", ex);
-            }
+            interceptAddSceneLightsCall = set;
+        }
+        public void SetInterceptOnRenderCoronaCall(bool set)
+        {
+            interceptOnRenderCoronaCall = set;
+        }
+        public void SetInterceptGetTrafficLightStateCalls(bool set)
+        {
+            interceptOnGetTrafficLightStateCalls = set;
         }
 
-        private void PrepareForLightnigboltSummoning(ThunderstormProgress progress)
+        private void PrepareForLightningboltSummoning(ThunderstormProgress progress)
         {
             // Check if can spawn any lightning bolt at all
             float rnd = GENERATE_RANDOM_FLOAT_IN_RANGE(0.0f, 1.0f) * 100.0f;
@@ -299,9 +412,8 @@ namespace ProjectThunderIV
         }
         private void SummonLightningbolt(Vector3 spawnPosition, bool canHaveBranches = true, bool growFromGroundUp = false, int overrideLightningSize = -1, Vector3 overrideBoltColor = default(Vector3), Vector3 overrideSkyColor = default(Vector3), float overrideSkyBrightness = -1f, bool wasCalledFromAnotherScript = false)
         {
-            // Tell network clients to spawn a lightning bolt
-            if (ModSettings.EnableNetworkSync)
-                UpdateNetworkStruct(true, spawnPosition, canHaveBranches, growFromGroundUp, overrideLightningSize, overrideBoltColor, overrideSkyColor, overrideSkyBrightness);
+            if (spawnPosition == Vector3.Zero)
+                return;
 
             // If there is a lightning bolt added already, reset its size to default to make it look like this lightning bolt got new power
             if (!wasCalledFromAnotherScript)
@@ -429,12 +541,12 @@ namespace ProjectThunderIV
                         if (previousPoint.Z <= groundZ)
                         {
 
+                            Vector3 groundPos = NativeWorld.GetGroundPosition(previousPoint, GroundType.Highest);
+                            lightningBolt.GroundPosition = groundPos;
+
                             // Get the ground position at the last lightning bolt point and create explosion there if allowed
                             if (ModSettings.CreateExplosions)
-                            {
-                                Vector3 groundPos = NativeWorld.GetGroundPosition(previousPoint, GroundType.Highest);
                                 NativeWorld.AddExplosion(groundPos, (eExplosion)ModSettings.ExplosionType, ModSettings.ExplosionRadius, true, false, ModSettings.ExplosionCamShake);
-                            }
 
                             didLastLightningHitGround = true;
 
@@ -474,12 +586,36 @@ namespace ProjectThunderIV
             // Add new lightning bolt to list of lightning bolts
             lightningBolts.Add(lightningBolt);
 
-            // Play thunder sound from the middle of the lightning bolt
+            // Check if blackout can occur
+            CheckIfExplosionIsNearAnySubstation(true);
+
+            // Play thunder sound from the lightning bolt
             PlayThunderSound(lightningBolt, spawnPosition);
 
-            // Tell network clients to reset their state after 2.25 seconds
-            if (ModSettings.EnableNetworkSync)
-                AddDelayedCall(2.25d, () => UpdateNetworkStruct(false, Vector3.Zero, false, false, 0, Vector3.Zero, Vector3.Zero, 0f), true);
+#if DEBUG
+            // Debug
+            if (nextLightningBoltWillCauseBlackout)
+            {
+                TriggerBlackout(true);
+                nextLightningBoltWillCauseBlackout = false;
+            }
+#endif
+
+            // Update network sync
+            if (ModSettings.EnableNetworkSync && IVNetwork.IsNetworkGameRunning() && IVNetwork.IsHostingGame)
+            {
+                // Update the network struct so clients will see if a lightning bolt can spawn or if a blackout can occur etc
+                UpdateNetworkStruct(true, spawnPosition, canHaveBranches, growFromGroundUp, overrideLightningSize, overrideBoltColor, overrideSkyColor, overrideSkyBrightness, BlackoutSystem.IsActive, blackoutActiveTime);
+
+                // Tell network clients to reset their state after 2.25 seconds
+                AddDelayedCall(TimeSpan.FromSeconds(2.25d),
+                    () =>
+                    {
+                        UpdateNetworkStruct(false, Vector3.Zero, false, false, 0, Vector3.Zero, Vector3.Zero, 0f, false, 0);
+                    },
+                    true,
+                    null);
+            }
         }
         private void BuildBranches(LightningBolt lightningBolt)
         {
@@ -528,120 +664,381 @@ namespace ProjectThunderIV
                     stream.Play();
                     currentSoundStreams.Add(stream);
 
-                    // Loop through all peds in the world and maybe make them react to the thunder sound if allowed
-                    if (ModSettings.AllowPedReactions && !IVNetwork.IsNetworkGameRunning())
-                    {
-                        // Request shocking event animations
-                        REQUEST_ANIMS("amb@shock_events");
-
-                        IVPool pedPool = IVPools.GetPedPool();
-                        for (int i = 0; i < pedPool.Count; i++)
-                        {
-                            UIntPtr ptr = pedPool.Get(i);
-
-                            if (ptr == UIntPtr.Zero
-                                || ptr == IVPlayerInfo.FindThePlayerPed())
-                                continue;
-
-                            if ((GENERATE_RANDOM_FLOAT_IN_RANGE(0f, 1f) * 100.0f) > ModSettings.ReactionChance && !forcePedsToReact)
-                                continue;
-
-                            IVPed ped = IVPed.FromUIntPtr(ptr);
-                            int handle = (int)pedPool.GetIndex(ptr);
-
-                            if (IS_PED_A_MISSION_PED(handle))
-                                continue;
-
-                            // React to thunder
-                            if (GENERATE_RANDOM_INT_IN_RANGE(0, 100) < 40)
-                                ped.SayAmbientSpeech(GENERATE_RANDOM_INT_IN_RANGE(0, 100) < 50 ? "SURPRISED" : "SHIT"); 
-
-                            if (GENERATE_RANDOM_INT_IN_RANGE(0, 100) < 50)
-                                ped.GetTaskController().LookAt(stream.Position, (uint)GENERATE_RANDOM_INT_IN_RANGE(2000, 4000));
-                            else
-                                ped.GetAnimationController().Play("amb@shock_events", "look_over_shoulder", 3f, AnimationFlags.PlayInUpperBodyWithWalk);
-                        }
-                    }
+                    Vector3 lookPos = stream.Position;
+                    MakePedsReact(true, lookPos);
                 };
 
                 // If seconds delay is under 1 second then play sound instantly. Otherwise, delay sound
                 if (secondsDelay < 1d)
                 {
                     // Just add it as a delayed call too but invoke it instantly because this can crash the game when called from the rendering thread and it's trying to request the "amb@shock_events" animations.
-                    AddDelayedCall(0d, actionToExecute, false);
+                    AddDelayedCall(TimeSpan.FromSeconds(0d), actionToExecute, false, null);
                 }
                 else
                 {
                     // This will delay the sound of the thunder depending on the distance to the player
-                    AddDelayedCall(secondsDelay, actionToExecute, false);
+                    AddDelayedCall(TimeSpan.FromSeconds(secondsDelay), actionToExecute, false, null);
                 }
             }
         }
 
+        private void CheckIfExplosionIsNearAnySubstation(bool explosionCausedByLighting)
+        {
+            // Blackouts can only be triggerd when it happens on the host
+            if (IVNetwork.IsNetworkGameRunning() && !IVNetwork.IsHostingGame)
+                return;
+            // Check if blackouts should be disabled in mp
+            if (IVNetwork.IsNetworkGameRunning() && !ModSettings.AllowBlackoutInMultiplayer)
+                return;
+
+            // Only lightning can trigger a blackout in mp
+            if (IVNetwork.IsNetworkGameRunning() && !explosionCausedByLighting)
+                return;
+
+            for (int i = 0; i < electricalSubstations.Count; i++)
+            {
+                ElectricalSubstation substation = electricalSubstations[i];
+
+                // Loop through explosion types and see if there is an explosion with this type in sphere
+                for (int t = 0; t < 24; t++)
+                {
+                    // Ignore some explosion types
+                    switch (t)
+                    {
+                        case 1:
+                        case 3:
+                        case 8:
+                        case 9:
+                        case 10:
+                        case 11:
+                            continue;
+                    }
+
+                    if (IS_EXPLOSION_IN_SPHERE(t, substation.Position, ModSettings.BlackoutRangeAroundElectricalSubstation))
+                    {
+                        if (!substation.WasExploded)
+                        {
+                            TriggerBlackout();
+                            substation.ExplosionType = t;
+                            substation.WasExploded = true;
+                        }
+                    }
+                    else
+                    {
+                        if (substation.WasExploded && substation.ExplosionType == t)
+                        {
+                            substation.WasExploded = false;
+                        }
+                    }
+                }
+            }
+        }
+        private void TriggerBlackout(bool forceTrigger = false, int overrideActiveTime = -1, bool calledFromRenderThread = false)
+        {
+            if (IVNetwork.IsNetworkGameRunning() && !ModSettings.AllowBlackoutInMultiplayer)
+                return;
+            if (BlackoutSystem.IsActive)
+                return;
+
+            // Check if a blackout could trigger
+            if (!forceTrigger)
+            {
+                float chance = ModSettings.BlackoutChanceDay;
+
+                DayState dayState = NativeWorld.GetDayState();
+                if (dayState == DayState.Evening || dayState == DayState.Night)
+                    chance = ModSettings.BlackoutChanceEvening;
+
+                // Calculate the chance of a blackout to occur
+                float v = (GENERATE_RANDOM_FLOAT_IN_RANGE(0f, 1f) * 100.0f);
+
+                if (v > chance)
+                    return;
+            }
+
+            // Make player react to it if allowed
+            if (ModSettings.AllowPlayerReactions)
+            {
+                AddDelayedCall(TimeSpan.FromSeconds(GENERATE_RANDOM_FLOAT_IN_RANGE(0.5f, 1f)),
+                    () => playerPed.SayAmbientSpeech("GENERIC_CURSE"),
+                    false,
+                    null);
+            }
+
+            // Blackout can start!
+            BlackoutSystem.SwitchBlackout(true);
+
+            // Make other peds react to it after a few seconds if allowed
+            if (!calledFromRenderThread)
+                MakePedsReact(false, Vector3.Zero);
+
+            // Generate random number how long the blackout will be active for
+            blackoutActiveTime = GENERATE_RANDOM_INT_IN_RANGE(ModSettings.BlackoutActiveForMin, ModSettings.BlackoutActiveForMax);
+
+            if (overrideActiveTime != -1)
+                blackoutActiveTime = overrideActiveTime;
+
+            // Add delayed call which turns off the blackout
+            AddDelayedCall(
+                TimeSpan.FromSeconds(blackoutActiveTime),
+                () => BlackoutSystem.SwitchBlackout(false),
+                false,
+                "TURN_OFF_BLACKOUT");
+        }
+
+        public void PlayBlackoutSound()
+        {
+            if (!ModSettings.PlayBlackoutSound)
+                return;
+            if (!ModSettings.CanPlayBlackoutSoundWhenInInterior && IS_INTERIOR_SCENE())
+                return;
+
+            if (blackoutSoundStream == null)
+            {
+                string path = string.Format("{0}\\Audio\\blackout.mp3", ScriptResourceFolder);
+
+                if (!File.Exists(path))
+                    return;
+
+                int handle = Bass.CreateStream(path);
+
+                if (handle == 0)
+                    return;
+
+                Logging.LogDebug("Created blackout sound stream as it wasn't created yet. Handle: {0}", handle);
+
+                blackoutSoundStream = new SoundStream(handle, -0.6f, true);
+                currentSoundStreams.Add(blackoutSoundStream);
+
+                blackoutSoundStream.Play();
+            }
+            else
+            {
+                blackoutSoundStream.Play();
+            }
+        }
+        private void PlayWDSfxSound()
+        {
+            if (wdSfxSoundStream == null)
+            {
+                string path = string.Format("{0}\\Audio\\wdsfx.mp3", ScriptResourceFolder);
+
+                if (!File.Exists(path))
+                    return;
+
+                int handle = Bass.CreateStream(path);
+
+                if (handle == 0)
+                    return;
+
+                Logging.LogDebug("Created wdsfx sound stream as it wasn't created yet. Handle: {0}", handle);
+
+                wdSfxSoundStream = new SoundStream(handle, 0f, true);
+                currentSoundStreams.Add(wdSfxSoundStream);
+
+                wdSfxSoundStream.Play();
+            }
+            else
+            {
+                wdSfxSoundStream.Play();
+            }
+        }
+
+        private void MakePedsReact(bool lookAtPosition, Vector3 position)
+        {
+            // Loop through all peds in the world and maybe make them react to the thunder sound if allowed
+            if (ModSettings.AllowPedReactions && !IVNetwork.IsNetworkGameRunning())
+            {
+                // Request shocking event animations but only if we really need them
+                if (lookAtPosition)
+                    REQUEST_ANIMS("amb@shock_events");
+
+                for (int i = 0; i < pedPool.Count; i++)
+                {
+                    UIntPtr ptr = pedPool.Get(i);
+
+                    if (ptr == UIntPtr.Zero
+                        || ptr == IVPlayerInfo.FindThePlayerPed())
+                        continue;
+
+                    if ((GENERATE_RANDOM_FLOAT_IN_RANGE(0f, 1f) * 100.0f) > ModSettings.ReactionChance && !forcePedsToReact)
+                        continue;
+
+                    IVPed ped = IVPed.FromUIntPtr(ptr);
+                    int handle = (int)pedPool.GetIndex(ptr);
+
+                    if (IS_PED_A_MISSION_PED(handle))
+                        continue;
+
+                    // React to thunder
+                    if (GENERATE_RANDOM_INT_IN_RANGE(0, 100) < 40)
+                        ped.SayAmbientSpeech(GENERATE_RANDOM_INT_IN_RANGE(0, 100) < 50 ? "SURPRISED" : "SHIT");
+
+                    if (lookAtPosition)
+                    {
+                        if (GENERATE_RANDOM_INT_IN_RANGE(0, 100) < 50)
+                            ped.GetTaskController().LookAt(position, (uint)GENERATE_RANDOM_INT_IN_RANGE(2000, 4000));
+                        else
+                            ped.GetAnimationController().Play("amb@shock_events", "look_over_shoulder", 3f, AnimationFlags.PlayInUpperBodyWithWalk);
+                    }
+                }
+            }
+        }
+
+        // Network
         private void CleanupNetworkStuff()
         {
             // Free allocated network memory
-            if (networkStructureHandle.IsAllocated)
-                networkStructureHandle.Free();
-            networkStructure = null;
+            if (networkSyncStructHandle.IsAllocated)
+                networkSyncStructHandle.Free();
+
+            networkSyncStruct = null;
+
             wasSpawned = false;
         }
-        private void UpdateNetworkStruct(bool spawnNow, Vector3 spawnPosition, bool canHaveBranches, bool growFromGroundUp, int overrideLightningSize, Vector3 overrideBoltColor, Vector3 overrideSkyColor, float overrideSkyBrightness)
+        private void UpdateNetworkStruct(bool spawnNow, Vector3 spawnPosition, bool canHaveBranches, bool growFromGroundUp, int overrideLightningSize, Vector3 overrideBoltColor, Vector3 overrideSkyColor, float overrideSkyBrightness, bool activateBlackout, int blackoutActiveTime)
         {
             if (!IVNetwork.IsNetworkGameRunning())
                 return;
             if (!IVNetwork.IsHostingGame)
                 return;
-            if (!networkStructureHandle.IsAllocated)
+            if (!networkSyncStructHandle.IsAllocated)
                 return;
-            if (networkStructure == null)
+            if (networkSyncStruct == null)
                 return;
 
-            networkStructure.SpawnNow = spawnNow;
-            networkStructure.SpawnPosition = spawnPosition;
-            networkStructure.CanHaveBranches = canHaveBranches;
-            networkStructure.GrowFromGroundUp = growFromGroundUp;
-            networkStructure.OverrideLightningSize = overrideLightningSize;
-            networkStructure.OverrideBoltColor = overrideBoltColor;
-            networkStructure.OverrideSkyColor = overrideSkyColor;
-            networkStructure.OverrideSkyBrightness = overrideSkyBrightness;
-            
-            Marshal.StructureToPtr(networkStructure, networkStructureHandle.AddrOfPinnedObject(), false);
+            // Lightning
+            networkSyncStruct.SpawnNow = spawnNow;
+            networkSyncStruct.SpawnPosition = spawnPosition;
+            networkSyncStruct.CanHaveBranches = canHaveBranches;
+            networkSyncStruct.GrowFromGroundUp = growFromGroundUp;
+            networkSyncStruct.OverrideLightningSize = overrideLightningSize;
+            networkSyncStruct.OverrideBoltColor = overrideBoltColor;
+            networkSyncStruct.OverrideSkyColor = overrideSkyColor;
+            networkSyncStruct.OverrideSkyBrightness = overrideSkyBrightness;
+
+            // Blackout
+            networkSyncStruct.ActivateBlackout = activateBlackout;
+            networkSyncStruct.BlackoutActiveTime = blackoutActiveTime;
+
+            // Update the internally registered structure
+            Marshal.StructureToPtr(networkSyncStruct, networkSyncStructHandle.AddrOfPinnedObject(), true);
 
             if (logDebugNetMessages)
                 Logging.Log("Updated network struct.");
         }
-        
-        private void ProcessDelayedCalls(bool calledFromUninitializeEvent)
+        private void HandleNetworkStuff()
         {
-            DateTime utcNow = DateTime.UtcNow;
-
-            for (int i = 0; i < delayedCalls.Count; i++)
+            if (!IVNetwork.IsNetworkGameRunning())
             {
-                DelayedCall delayedCall = delayedCalls[i];
+                CleanupNetworkStuff();
+                return;
+            }
 
-                if (calledFromUninitializeEvent && !delayedCall.CanExecuteWhenUninitializing)
-                {
-                    delayedCalls.RemoveAt(i);
-                    continue;
-                }
+            // Register network struct
+            if (!networkSyncStructHandle.IsAllocated && networkSyncStruct == null)
+            {
+                networkSyncStruct = new NetworkSyncStruct();
 
-                if (utcNow > delayedCall.ExecuteAt)
+                int size = Marshal.SizeOf(networkSyncStruct);
+                byte[] buffer = new byte[size];
+
+                networkSyncStructHandle = GCHandle.Alloc(buffer, GCHandleType.Pinned);
+
+                Marshal.StructureToPtr(networkSyncStruct, networkSyncStructHandle.AddrOfPinnedObject(), false);
+                REGISTER_HOST_BROADCAST_VARIABLES(networkSyncStructHandle.AddrOfPinnedObject(), size / 4, 29);
+            }
+
+            // - - - Handle network client commands - - -
+            if (!ModSettings.EnableNetworkSync)
+                return;
+            if (IVNetwork.IsHostingGame)
+                return;
+
+            // Get host value
+            networkSyncStruct = Marshal.PtrToStructure<NetworkSyncStruct>(networkSyncStructHandle.AddrOfPinnedObject());
+
+            // Check if can spawn lightning bolt
+            if (networkSyncStruct.SpawnNow)
+            {
+                if (logDebugNetMessages)
+                    Logging.Log("Received spawn lightning command!");
+
+                if (!wasSpawned)
                 {
-                    delayedCall.ActionToExecute?.Invoke();
-                    delayedCalls.RemoveAt(i);
+                    // Summon lightning bolt but only if the player is not the host
+                    SummonLightningbolt(networkSyncStruct.SpawnPosition,
+                        networkSyncStruct.CanHaveBranches,
+                        networkSyncStruct.GrowFromGroundUp,
+                        networkSyncStruct.OverrideLightningSize,
+                        networkSyncStruct.OverrideBoltColor,
+                        networkSyncStruct.OverrideSkyColor,
+                        networkSyncStruct.OverrideSkyBrightness,
+                        false);
+
+                    // Trigger blackout if can trigger
+                    if (networkSyncStruct.ActivateBlackout)
+                        TriggerBlackout(true, networkSyncStruct.BlackoutActiveTime, false);
+
+                    wasSpawned = true;
                 }
             }
+            else
+            {
+                wasSpawned = false;
+            }
+
         }
         #endregion
 
         #region Functions
-        private static float Lerp(float a, float b, float t)
+        public static float Lerp(float a, float b, float t)
         {
             // Clamp t between 0 and 1
             t = Math.Max(0.0f, Math.Min(1.0f, t));
 
             return a + (b - a) * t;
+        }
+
+        public IVPed GetPlayerPed()
+        {
+            return playerPed;
+        }
+        public IVPool GetPedPool()
+        {
+            return pedPool;
+        }
+        public IVPool GetVehiclePool()
+        {
+            return vehiclePool;
+        }
+
+        private TimeSpan GetCurrentGameTime()
+        {
+            TimeSpan currentTime = TimeSpan.Zero;
+
+            if (IVNetwork.IsNetworkGameRunning())
+            {
+                // This timer is in sync with all clients on the network
+                GET_NETWORK_TIMER(out int t);
+                currentTime = TimeSpan.FromMilliseconds(t);
+            }
+            else
+            {
+                GET_GAME_TIMER(out uint t);
+                currentTime = TimeSpan.FromMilliseconds(t);
+            }
+
+            return currentTime;
+        }
+
+        public int RemoveAllDelayedActionsWithThisTag(string tag)
+        {
+            return delayedCalls.RemoveAll(x => x.Tag == tag);
+        }
+        public bool IsThereAnyDelayedActionWithThisTag(string tag)
+        {
+            return delayedCalls.Where(x => x.Tag == tag).Count() > 0;
         }
 
         private Vector3 GetRandomPositionInWorld()
@@ -690,27 +1087,7 @@ namespace ProjectThunderIV
         }
         #endregion
 
-        #region Constructor
-        public Main()
-        {
-            delayedCalls = new List<DelayedCall>();
-            soundConfigurations = new List<SoundConfiguration>();
-            scriptedLighting = new List<ScriptedLightning>();
-            lightningBolts = new List<LightningBolt>(6); // Initialize with starting size 6
-            currentSoundStreams = new List<SoundStream>(6); // Initialize with starting size 6
-            
-            WaitTickInterval = 1250;
-
-            RAGE.OnWindowFocusChanged += RAGE_OnWindowFocusChanged;
-            Uninitialize += Main_Uninitialize;
-            Initialized += Main_Initialized;
-            ScriptCommandReceived += Main_ScriptCommandReceived;
-            OnImGuiRendering += Main_OnImGuiRendering;
-            Tick += Main_Tick;
-            WaitTick += Main_WaitTick;
-        }
-        #endregion
-
+        #region Events
         private void RAGE_OnWindowFocusChanged(bool focused)
         {
             if (focused)
@@ -739,29 +1116,135 @@ namespace ProjectThunderIV
                 }
             }
         }
+        #endregion
+
+        #region Hooks
+        private HookCallback<int> Hooks_OnAddSceneLight(uint a1, uint nLightType, uint nFlags, Vector3 vDir, Vector3 vTanDir, Vector3 vPos, Vector3 vColor, float fIntensity, int texHash, int txdSlot, float fRange, float fInnerConeAngle, float fOuterConeAngle, float fVolIntensity, float fVolSizeScale, int interiorId, uint a15, uint nID)
+        {
+            // Allow lights when their ID matches the player ped pointer
+            if (nID == playerPed.GetUIntPtr().ToUInt32())
+                return new HookCallback<int>(false);
+
+            // I should probably add an option that allows other IV-SDK .NET script devs to add their own
+            // light id to a ignore list, so they will still be able to render, and not get intercepted by this event.
+
+            // Allow lights which are of that type...
+            if ((eLightType)nLightType == eLightType.Unk1)
+                return new HookCallback<int>(false);
+
+            // Allow lights which are used for vehicles
+            if (((eLightFlags)nFlags).HasFlag(eLightFlags.Vehicle))
+                return new HookCallback<int>(false);
+
+            return new HookCallback<int>(interceptAddSceneLightsCall);
+        }
+        private HookCallback<int> Hooks_OnRenderCorona(int id, Color color, float a5, Vector3 pos, float range, float a8, float a9, int a10, float a11, sbyte a12, sbyte a13, int a14)
+        {
+            if (id == 29) // Let coronas with id 29 through because those render the lightning bolts
+                return new HookCallback<int>(false);
+
+            // I should probably add an option that allows other IV-SDK .NET script devs to add their own
+            // corona id to a ignore list, so they will still be able to render, and not get intercepted by this event.
+
+            return new HookCallback<int>(interceptOnRenderCoronaCall);
+        }
+        private HookCallback<int> Hooks_OnGetTrafficLightState1(bool a1, int timeOffsetMilliseconds)
+        {
+            return new HookCallback<int>(interceptOnGetTrafficLightStateCalls, (int)eTrafficLightState.DISABLED);
+        }
+        private HookCallback<int> Hooks_OnGetTrafficLightState2(bool a1, int timeOffsetMilliseconds)
+        {
+            return new HookCallback<int>(interceptOnGetTrafficLightStateCalls, (int)eTrafficLightState.DISABLED);
+        }
+        #endregion
+
+        #region Constructor
+        public Main()
+        {
+            Instance = this;
+
+            mainThreadQueue = new Queue<Action>();
+            delayedCalls = new List<DelayedCall>();
+            soundConfigurations = new List<SoundConfiguration>();
+            scriptedLighting = new List<ScriptedLightning>();
+            lightningBolts = new List<LightningBolt>(6); // Initialize with starting size 6
+            currentSoundStreams = new List<SoundStream>(6); // Initialize with starting size 6
+            
+            WaitTickInterval = 1250;
+
+            // Script event stuff
+            Uninitialize += Main_Uninitialize;
+            Initialized += Main_Initialized;
+            ScriptCommandReceived += Main_ScriptCommandReceived;
+            OnImGuiRendering += Main_OnImGuiRendering;
+            Tick += Main_Tick;
+            WaitTick += Main_WaitTick;
+
+            // Other event stuff
+            RAGE.OnWindowFocusChanged           += RAGE_OnWindowFocusChanged;
+            GameHooks.OnAddSceneLight           += Hooks_OnAddSceneLight;
+            GameHooks.OnRenderCorona            += Hooks_OnRenderCorona;
+            GameHooks.OnGetTrafficLightState1   += Hooks_OnGetTrafficLightState1;
+            GameHooks.OnGetTrafficLightState2   += Hooks_OnGetTrafficLightState2;
+        }
+        #endregion
 
         private void Main_Uninitialize(object sender, EventArgs e)
         {
+            mainThreadQueue.Clear();
+
+            // Uninitialize blackout class
+            BlackoutSystem.Uninitialize(CLR.CLRBridge.IsShuttingDown);
+            
             // Forcefully go through delayed calls list to reset state on client machines
             ProcessDelayedCalls(true);
 
-            RAGE.OnWindowFocusChanged -= RAGE_OnWindowFocusChanged;
+            // Unregister from events that are not within the Scripts class.
+            // This is important as the garbage collector will keep the assigned delegate alive even when the script is no longer active!
+            // I will probably (somehow) add a "SubscribeToEvent" function or something to the "Script" class which keeps track of the
+            // events the script subscribed to, which can be cleaned up once the script unloads.
+            RAGE.OnWindowFocusChanged           -= RAGE_OnWindowFocusChanged;
+            GameHooks.OnAddSceneLight           -= Hooks_OnAddSceneLight;
+            GameHooks.OnRenderCorona            -= Hooks_OnRenderCorona;
+            GameHooks.OnGetTrafficLightState1   -= Hooks_OnGetTrafficLightState1;
+            GameHooks.OnGetTrafficLightState2   -= Hooks_OnGetTrafficLightState2;
 
             Bass.Free();
-            currentSoundStreams.Clear();
-            currentSoundStreams = null;
-            soundConfigurations.Clear();
-            soundConfigurations = null;
-            lightningBolts.Clear();
-            lightningBolts = null;
-            delayedCalls.Clear();
-            delayedCalls = null;
+
+            if (currentSoundStreams != null)
+            {
+                currentSoundStreams.Clear();
+                currentSoundStreams = null;
+            }
+            if (electricalSubstations != null)
+            {
+                electricalSubstations.Clear();
+                electricalSubstations = null;
+            }
+            if (soundConfigurations != null)
+            {
+                soundConfigurations.Clear();
+                soundConfigurations = null;
+            }
+            if (lightningBolts != null)
+            {
+                lightningBolts.Clear();
+                lightningBolts = null;
+            }
+            if (delayedCalls != null)
+            {
+                delayedCalls.Clear();
+                delayedCalls = null;
+            }
 
             // Reload timecycle if allowed
             if (ModSettings.ReloadTimeCycleWhenModUnloads)
                 IVTimeCycle.Initialise();
 
             CleanupNetworkStuff();
+
+            playerPed = null;
+            Instance = null;
         }
         private void Main_Initialized(object sender, EventArgs e)
         {
@@ -771,7 +1254,41 @@ namespace ProjectThunderIV
             RegisterConsoleCommand("pt_reloadscriptedlightning", ReloadScriptedLightningCommand);
             RegisterConsoleCommand("pt_summon_lightning_bolt", SummonLightningboltCommand);
 
+            // Add custom phone numbers
+            RegisterPhoneNumber("05-27-2014", () =>
+            {
+                if (IVNetwork.IsNetworkGameRunning())
+                    return;
+
+                showRandomChars = true;
+                AddDelayedCall(TimeSpan.FromSeconds(2.5d), () =>
+                {
+
+                    if (GetCurrentGameTime() > nextAllowedBlackoutPhoneCall && !BlackoutSystem.IsActive)
+                    {
+                        // Play sound
+                        PlayWDSfxSound();
+                        
+                        // Trigger blackout after X seconds
+                        AddDelayedCall(TimeSpan.FromSeconds(GENERATE_RANDOM_FLOAT_IN_RANGE(2f, 3f)), () => TriggerBlackout(true), false, null);
+
+                        // Set next allowed blackout through phone call
+                        nextAllowedBlackoutPhoneCall = GetCurrentGameTime() + TimeSpan.FromMinutes(GENERATE_RANDOM_FLOAT_IN_RANGE(1.25f, 3.55f));
+                    }
+                    else
+                    {
+                        PLAY_SOUND_FRONTEND(-1, "GENERAL_FRONTEND_MENU_NEGATIVE_L");
+                        PLAY_SOUND_FRONTEND(-1, "GENERAL_FRONTEND_MENU_NEGATIVE_R");
+                    }
+
+                    showRandomChars = false;
+                    ShowSubtitleMessage("");
+
+                }, false, null);
+            });
+
             // Initialize Bass Library
+            // TODO: Change to use another audio library like FMOD
             if (!Bass.Init(-1, 44100, DeviceInitFlags.Mono | DeviceInitFlags.Device3D))
             {
                 if (Bass.LastError == Errors.Already)
@@ -785,6 +1302,9 @@ namespace ProjectThunderIV
 
             // Load sound configurations
             LoadSoundConfigurations();
+
+            // Load Electrical Substation Positions
+            LoadElectricalSubstations();
 
             // Load Scripted Thunder
             LoadScriptedLightning();
@@ -863,6 +1383,23 @@ namespace ProjectThunderIV
                     }
                     return false;
 
+                case "is_blackout_active":
+                    return BlackoutSystem.IsActive;
+
+                case "was_blackout_started_by_project_thunder":
+                    return BlackoutSystem.IsActive && !BlackoutSystem.WasTriggeredByAnotherScript;
+
+                case "switch_blackout":
+                    {
+                        if (args == null)
+                            return false;
+                        if (args.Length == 0)
+                            return false;
+
+                        BlackoutSystem.SwitchBlackout(Convert.ToBoolean(args[0]), true, Convert.ToBoolean(args[1]));
+                    }
+                    return true;
+
                 default:
                     return false;
             }
@@ -870,6 +1407,10 @@ namespace ProjectThunderIV
 
         private void Main_OnImGuiRendering(IntPtr devicePtr, ImGuiIV_DrawingContext ctx)
         {
+#if PREVIEW
+            ctx.AddText(new Vector2(4f, ImGuiIV.MainViewport.Size.Y - 20f), Color.FromArgb(50, Color.White), string.Format("Project Thunder PREVIEW Version {0}", Assembly.GetExecutingAssembly().GetName().Version.ToString()));
+#endif
+
             if (!MenuOpen)
                 return;
 
@@ -878,7 +1419,9 @@ namespace ProjectThunderIV
             if (ImGuiIV.BeginTabBar("##ProjectThunderMainTabBar"))
             {
 
+#if DEBUG
                 DebugTabItem();
+#endif
                 SettingsTabItem();
                 ScriptedLightningTabItem();
 
@@ -887,102 +1430,124 @@ namespace ProjectThunderIV
 
             ImGuiIV.End();
         }
+#if DEBUG
         private void DebugTabItem()
         {
-            if (ModSettings.EnableDebug)
+            if (ImGuiIV.BeginTabItem("Debug"))
             {
-                if (ImGuiIV.BeginTabItem("Debug"))
+                ImGuiIV.SeparatorText("General Debug");
+                ImGuiIV.CheckBox("Log Net Messages", ref logDebugNetMessages);
+                ImGuiIV.CheckBox("InterceptAddSceneLightsCall", ref interceptAddSceneLightsCall);
+                ImGuiIV.CheckBox("InterceptOnRenderCoronaCall", ref interceptOnRenderCoronaCall);
+                ImGuiIV.CheckBox("InterceptOnGetTrafficLightStateCalls", ref interceptOnGetTrafficLightStateCalls);
+
+                ImGuiIV.Spacing();
+                ImGuiIV.SeparatorText("Blackout Debug");
+                ImGuiIV.TextUnformatted("IsActive: {0}", BlackoutSystem.IsActive);
+                ImGuiIV.TextUnformatted("WasTriggeredByAnotherScript: {0}", BlackoutSystem.WasTriggeredByAnotherScript);
+                ImGuiIV.TextUnformatted("Last Blackout lasted for {0} seconds.", blackoutActiveTime);
+
+                if (ImGuiIV.Button("Enable Blackout"))
+                    mainThreadQueue.Enqueue(() => BlackoutSystem.SwitchBlackout(true, false));
+                ImGuiIV.SameLine();
+                if (ImGuiIV.Button("Disable Blackout"))
+                    mainThreadQueue.Enqueue(() => BlackoutSystem.SwitchBlackout(false, false));
+                if (ImGuiIV.Button("Trigger Blackout"))
+                    TriggerBlackout(true, -1, true);
+
+                ImGuiIV.Spacing();
+                ImGuiIV.SeparatorText("Lightning Debug");
+                ImGuiIV.TextUnformatted("Is player above dangerous height: {0}", IsPlayerAboveDangerousHeight());
+                ImGuiIV.TextUnformatted("Last lightning size: {0}", lastLightningSize);
+                ImGuiIV.TextUnformatted("Did Last Lightning Bolt Hit Ground: {0}", didLastLightningHitGround);
+                ImGuiIV.Spacing();
+                ImGuiIV.TextUnformatted("Last Lightning Bolt Position: {0}", lastLightningPosition);
+                float lastThunderDistance = Vector3.Distance(playerPos, lastLightningPosition);
+                ImGuiIV.TextUnformatted("Distance from player: {0} ({1} Seconds)", lastThunderDistance, TimeSpan.FromMilliseconds(lastThunderDistance).TotalSeconds * 0.5d);
+                ImGuiIV.CheckBox("Next lightning bolt will cause blackout", ref nextLightningBoltWillCauseBlackout);
+
+                ImGuiIV.Spacing();
+
+                if (ImGuiIV.Button("Summon Lightning Bolt"))
+                    SummonLightningbolt(overrideThunderPos ? testThunderPos : GetRandomPositionInWorld(), true, setLigtningBoltAlwaysGrowFromGroundUp);
+
+                ImGuiIV.HelpMarker("Enables some debug keys. Press 'L' to summon a lightning bolt infront of the camera.");
+                ImGuiIV.SameLine();
+                ImGuiIV.CheckBox("Debug Keys Enabled", ref debugKeysEnabled);
+                ImGuiIV.DragFloat("Debug summon distance to camera", ref distanceToCamera);
+
+                ImGuiIV.CheckBox("Disable Random Lightning Bolts", ref disableRandomLightningBolts);
+                ImGuiIV.CheckBox("Disable Branches", ref disableBranches);
+                ImGuiIV.CheckBox("Force Peds To React", ref forcePedsToReact);
+                ImGuiIV.CheckBox("Force Umbrella Check To Always Pass", ref forceUmbrellaCheckToAlwaysPass);
+                ImGuiIV.CheckBox("Set Lightning Bolt Always Grow Up", ref setLigtningBoltAlwaysGrowFromGroundUp);
+                ImGuiIV.CheckBox("Override Position", ref overrideThunderPos);
+                if (ImGuiIV.Button("Set to player pos"))
+                    testThunderPos = playerPos;
+                ImGuiIV.SameLine();
+                ImGuiIV.DragFloat3("New Position", ref testThunderPos);
+                ImGuiIV.CheckBox("Override Fade Out Speed", ref overrideFadeOutSpeed);
+                ImGuiIV.DragFloat("New Fade Out Speed", ref newFadeOutSpeed, 0.01f);
+
+                ImGuiIV.Spacing();
+                ImGuiIV.SeparatorText("Weather Debug");
+                ImGuiIV.TextUnformatted("Current Date: {0}", NativeWorld.CurrentDate);
+                ImGuiIV.TextUnformatted("ForcedWeatherType: {0}", (eWeather)IVWeather.ForcedWeatherType);
+                ImGuiIV.TextUnformatted("OldWeatherType: {0}", (eWeather)IVWeather.OldWeatherType);
+                ImGuiIV.TextUnformatted("NewWeatherType: {0}", (eWeather)IVWeather.NewWeatherType);
+                ImGuiIV.TextUnformatted("InterpolationValue: {0}", IVWeather.InterpolationValue);
+                ImGuiIV.TextUnformatted("Rain: {0}", IVWeather.Rain);
+
+                ImGuiIV.Spacing();
+                if (ImGuiIV.Button("Force Lightning Weather"))
+                    FORCE_WEATHER((uint)eWeather.WEATHER_LIGHTNING);
+                ImGuiIV.SameLine();
+                if (ImGuiIV.Button("Force Lightning Weather Now"))
+                    FORCE_WEATHER_NOW((uint)eWeather.WEATHER_LIGHTNING);
+                ImGuiIV.SameLine();
+                if (ImGuiIV.Button("Reset forced weather"))
+                    IVWeather.ForcedWeatherType = -1;
+
+                if (ImGuiIV.Button("Set time to night"))
+                    SET_TIME_OF_DAY(0, 0);
+
+                ImGuiIV.Spacing();
+                ImGuiIV.SeparatorText("Timecycle Debug");
+
+                if (lightningTimecycParams != null)
                 {
-                    ImGuiIV.SeparatorText("General Debug");
-                    ImGuiIV.CheckBox("Log Net Messages", ref logDebugNetMessages);
-
-                    ImGuiIV.SeparatorText("Lightning Debug");
-                    ImGuiIV.Text("Is player above dangerous height: {0}", IsPlayerAboveDangerousHeight());
-                    ImGuiIV.Text("Last lightning size: {0}", lastLightningSize);
-                    ImGuiIV.Text("Did Last Lightning Bolt Hit Ground: {0}", didLastLightningHitGround);
-                    ImGuiIV.Spacing();
-                    ImGuiIV.Text("Last Lightning Bolt Position: {0}", lastLightningPosition);
-                    float lastThunderDistance = Vector3.Distance(playerPos, lastLightningPosition);
-                    ImGuiIV.Text("Distance from player: {0} ({1} Seconds)", lastThunderDistance, TimeSpan.FromMilliseconds(lastThunderDistance).TotalSeconds * 0.5d);
-
-                    ImGuiIV.Spacing();
-
-                    if (ImGuiIV.Button("Summon Lightning Bolt"))
-                        SummonLightningbolt(overrideThunderPos ? testThunderPos : GetRandomPositionInWorld(), true, setLigtningBoltAlwaysGrowFromGroundUp);
-
-                    ImGuiIV.HelpMarker("Enables some debug keys. Press 'L' to summon a lightning bolt infront of the camera.");
-                    ImGuiIV.SameLine();
-                    ImGuiIV.CheckBox("Debug Keys Enabled", ref debugKeysEnabled);
-                    ImGuiIV.DragFloat("Debug summon distance to camera", ref distanceToCamera);
-
-                    ImGuiIV.CheckBox("Disable Random Lightning Bolts", ref disableRandomLightningBolts);
-                    ImGuiIV.CheckBox("Disable Branches", ref disableBranches);
-                    ImGuiIV.CheckBox("Force Peds To React", ref forcePedsToReact);
-                    ImGuiIV.CheckBox("Force Umbrella Check To Always Pass", ref forceUmbrellaCheckToAlwaysPass);
-                    ImGuiIV.CheckBox("Set Lightning Bolt Always Grow Up", ref setLigtningBoltAlwaysGrowFromGroundUp);
-                    ImGuiIV.CheckBox("Override Position", ref overrideThunderPos);
-                    if (ImGuiIV.Button("Set to player pos"))
-                        testThunderPos = playerPos;
-                    ImGuiIV.SameLine();
-                    ImGuiIV.DragFloat3("New Position", ref testThunderPos);
-                    ImGuiIV.CheckBox("Override Fade Out Speed", ref overrideFadeOutSpeed);
-                    ImGuiIV.DragFloat("New Fade Out Speed", ref newFadeOutSpeed, 0.01f);
-
-                    ImGuiIV.Spacing();
-                    ImGuiIV.SeparatorText("Weather Debug");
-                    ImGuiIV.Text("ForcedWeatherType: {0}", (eWeather)IVWeather.ForcedWeatherType);
-                    ImGuiIV.Text("OldWeatherType: {0}", (eWeather)IVWeather.OldWeatherType);
-                    ImGuiIV.Text("NewWeatherType: {0}", (eWeather)IVWeather.NewWeatherType);
-                    ImGuiIV.Text("InterpolationValue: {0}", IVWeather.InterpolationValue);
-                    ImGuiIV.Text("Rain: {0}", IVWeather.Rain);
-
-                    ImGuiIV.Spacing();
-                    if (ImGuiIV.Button("Force Lightning Weather"))
-                        FORCE_WEATHER((uint)eWeather.WEATHER_LIGHTNING);
-                    ImGuiIV.SameLine();
-                    if (ImGuiIV.Button("Force Lightning Weather Now"))
-                        FORCE_WEATHER_NOW((uint)eWeather.WEATHER_LIGHTNING);
-                    ImGuiIV.SameLine();
-                    if (ImGuiIV.Button("Reset forced weather"))
-                        IVWeather.ForcedWeatherType = -1;
-
-                    if (ImGuiIV.Button("Set time to night"))
-                        SET_TIME_OF_DAY(0, 0);
-
-                    ImGuiIV.Spacing();
-                    ImGuiIV.SeparatorText("Timecycle Debug");
-
-                    if (lightningTimecycParams != null)
-                    {
-                        ImGuiIV.BeginDisabled();
-                        float mCloudsBrightness = lightningTimecycParams.CloudsBrightness; ImGuiIV.DragFloat("Current Cloud Brightness", ref mCloudsBrightness);
-                        Vector3 mCloud1Color = lightningTimecycParams.Cloud1Color; ImGuiIV.DragFloat3("Current Cloud 1 Color", ref mCloud1Color);
-                        Vector3 mCloud2Color = lightningTimecycParams.Cloud2Color; ImGuiIV.DragFloat3("Current Cloud 2 Color", ref mCloud2Color);
-                        Vector3 mCloud3Color = lightningTimecycParams.Cloud3Color; ImGuiIV.DragFloat3("Current Cloud 3 Color", ref mCloud3Color);
-                        ImGuiIV.DragFloat("Previous Cloud Brightness", ref previousCloudsBrightness);
-                        ImGuiIV.DragFloat("Average Fade Out Speed", ref averageFadeOutSpeed);
-                        ImGuiIV.EndDisabled();
-                    }
-
-                    ImGuiIV.Spacing();
-                    ImGuiIV.SeparatorText("Sound Debug");
-                    ImGuiIV.Text("Currently active sounds: {0}", currentSoundStreams.Count);
-
-                    for (int i = 0; i < currentSoundStreams.Count; i++)
-                    {
-                        SoundStream stream = currentSoundStreams[i];
-
-                        if (ImGuiIV.Button("Stop"))
-                            stream.Stop();
-
-                        ImGuiIV.SameLine();
-                        ImGuiIV.Text("Handle: {0}, State: {1}, Volume: {2}", stream.Handle, stream.GetState(), stream.TargetVolume);
-                    }
-
-                    ImGuiIV.EndTabItem();
+                    ImGuiIV.BeginDisabled();
+                    float mCloudsBrightness = lightningTimecycParams.CloudsBrightness; ImGuiIV.DragFloat("Current Cloud Brightness", ref mCloudsBrightness);
+                    Vector3 mCloud1Color = lightningTimecycParams.Cloud1Color; ImGuiIV.DragFloat3("Current Cloud 1 Color", ref mCloud1Color);
+                    Vector3 mCloud2Color = lightningTimecycParams.Cloud2Color; ImGuiIV.DragFloat3("Current Cloud 2 Color", ref mCloud2Color);
+                    Vector3 mCloud3Color = lightningTimecycParams.Cloud3Color; ImGuiIV.DragFloat3("Current Cloud 3 Color", ref mCloud3Color);
+                    ImGuiIV.DragFloat("Previous Cloud Brightness", ref previousCloudsBrightness);
+                    ImGuiIV.DragFloat("Average Fade Out Speed", ref averageFadeOutSpeed);
+                    ImGuiIV.EndDisabled();
                 }
+
+                ImGuiIV.Spacing();
+                ImGuiIV.SeparatorText("Sound Debug");
+                ImGuiIV.TextUnformatted("Currently active sounds: {0}", currentSoundStreams.Count);
+
+                for (int i = 0; i < currentSoundStreams.Count; i++)
+                {
+                    SoundStream stream = currentSoundStreams[i];
+
+                    if (ImGuiIV.Button("Play"))
+                        stream.Play(true);
+                    ImGuiIV.SameLine();
+                    if (ImGuiIV.Button("Stop"))
+                        stream.Stop();
+
+                    ImGuiIV.SameLine();
+                    ImGuiIV.TextUnformatted("Handle: {0}, State: {1}, Volume: {2}", stream.Handle, stream.GetState(), stream.TargetVolume);
+                }
+
+                ImGuiIV.EndTabItem();
             }
         }
+#endif
         private void SettingsTabItem()
         {
             if (ImGuiIV.BeginTabItem("Settings"))
@@ -997,24 +1562,23 @@ namespace ProjectThunderIV
                 ImGuiIV.Spacing();
                 ImGuiIV.SeparatorText("The Settings");
 
-                ImGuiIV.Text("General");
-                ImGuiIV.CheckBox("EnableDebug", ref ModSettings.EnableDebug);
+                ImGuiIV.TextUnformatted("General");
                 ImGuiIV.CheckBox("ReloadTimeCycleWhenModUnloads", ref ModSettings.ReloadTimeCycleWhenModUnloads);
                 ImGuiIV.CheckBox("AllowLightningBoltsInCutscene", ref ModSettings.AllowLightningBoltsInCutscene);
 
                 ImGuiIV.Spacing();
-                ImGuiIV.Text("Networking");
+                ImGuiIV.TextUnformatted("Networking");
                 ImGuiIV.CheckBox("EnableNetworkSync", ref ModSettings.EnableNetworkSync);
 
                 ImGuiIV.Spacing();
-                ImGuiIV.Text("Sound");
+                ImGuiIV.TextUnformatted("Sound");
                 ImGuiIV.DragFloat("GlobalSoundMultiplier", ref ModSettings.GlobalSoundMultiplier, 0.01f);
                 ImGuiIV.CheckBox("VolumeIsAllowedToGoAboveOne", ref ModSettings.VolumeIsAllowedToGoAboveOne);
                 ImGuiIV.DragFloat("LowerVolumeByCertainAmountWhenInInterior", ref ModSettings.LowerVolumeByCertainAmountWhenInInterior, 0.01f);
                 ImGuiIV.InputText("SoundPackToUse", ref ModSettings.SoundPackToUse);
 
                 ImGuiIV.Spacing();
-                ImGuiIV.Text("Lightning Bolt");
+                ImGuiIV.TextUnformatted("Lightning Bolt");
                 ImGuiIV.DragFloat("SpawnChancePercentageBeginning", ref ModSettings.SpawnChancePercentageBeginning, 0.01f);
                 ImGuiIV.DragFloat("SpawnChancePercentageOngoing", ref ModSettings.SpawnChancePercentageOngoing, 0.01f);
                 ImGuiIV.DragFloat("SpawnChancePercentageEnding", ref ModSettings.SpawnChancePercentageEnding, 0.01f);
@@ -1028,19 +1592,36 @@ namespace ProjectThunderIV
                 ImGuiIV.ColorEdit3("BoltColor", ref ModSettings.BoltColor, eImGuiColorEditFlags.Float);
                 ImGuiIV.DragFloat("CoronaSize", ref ModSettings.CoronaSize, 0.01f);
                 ImGuiIV.DragFloat("SpawnHeight", ref ModSettings.SpawnHeight, 0.01f);
+                ImGuiIV.CheckBox("DoNotRenderOutOfViewLightningBolts", ref ModSettings.DoNotRenderOutOfViewLightningBolts);
 
                 ImGuiIV.Spacing();
-                ImGuiIV.Text("Light");
+                ImGuiIV.TextUnformatted("Light");
                 ImGuiIV.DragFloat("LightIntensity", ref ModSettings.LightIntensity, 0.001f);
                 ImGuiIV.DragFloat("LightRange", ref ModSettings.LightRange, 0.1f);
                 ImGuiIV.CheckBox("EnableLightShadow", ref ModSettings.EnableLightShadow);
+                ImGuiIV.CheckBox("DoNotRenderOutOfViewLights", ref ModSettings.DoNotRenderOutOfViewLights);
 
                 ImGuiIV.Spacing();
-                ImGuiIV.Text("Sky");
+                ImGuiIV.TextUnformatted("Blackout");
+                ImGuiIV.CheckBox("Enable", ref ModSettings.EnableBlackout);
+                ImGuiIV.CheckBox("AllowBlackoutInMultiplayer", ref ModSettings.AllowBlackoutInMultiplayer);
+                ImGuiIV.CheckBox("EnableAdditionalDarkness", ref ModSettings.EnableAdditionalBlackoutDarkness);
+                ImGuiIV.DragFloat("AdditionalDarkness", ref ModSettings.AdditionalBlackoutDarkness);
+                ImGuiIV.CheckBox("DecreaseCopsVisionOnActiveBlackout", ref ModSettings.DecreaseCopsVisionOnActiveBlackout);
+                ImGuiIV.CheckBox("PlayBlackoutSound", ref ModSettings.PlayBlackoutSound);
+                ImGuiIV.CheckBox("CanPlaySoundWhenInInterior", ref ModSettings.CanPlayBlackoutSoundWhenInInterior);
+                ImGuiIV.DragFloat("ChanceDay", ref ModSettings.BlackoutChanceDay);
+                ImGuiIV.DragFloat("ChanceEvening", ref ModSettings.BlackoutChanceEvening);
+                ImGuiIV.DragFloat("RangeAroundElectricalSubstation", ref ModSettings.BlackoutRangeAroundElectricalSubstation);
+                ImGuiIV.DragInt("MinActiveFor", ref ModSettings.BlackoutActiveForMin);
+                ImGuiIV.DragInt("MaxActiveFor", ref ModSettings.BlackoutActiveForMax);
+
+                ImGuiIV.Spacing();
+                ImGuiIV.TextUnformatted("Sky");
                 ImGuiIV.DragFloat("AdditionalCloudBrightness", ref ModSettings.AdditionalCloudBrightness, 0.01f);
 
                 ImGuiIV.Spacing();
-                ImGuiIV.Text("Danger");
+                ImGuiIV.TextUnformatted("Danger");
                 ImGuiIV.CheckBox("EnableDangerousHeight", ref ModSettings.EnableDangerousHeight);
                 ImGuiIV.DragFloat("DangerousHeight", ref ModSettings.DangerousHeight, 0.01f);
                 ImGuiIV.DragFloat("SpawnChanceWhenAboveDangerousHeight", ref ModSettings.SpawnChanceWhenAboveDangerousHeight, 0.01f);
@@ -1049,12 +1630,12 @@ namespace ProjectThunderIV
                 ImGuiIV.DragFloat("SpawnChanceWhenHoldingUmbrella", ref ModSettings.SpawnChanceWhenHoldingUmbrella, 0.01f);
 
                 ImGuiIV.Spacing();
-                ImGuiIV.Text("Reactions");
+                ImGuiIV.TextUnformatted("Reactions");
                 ImGuiIV.CheckBox("AllowPedReactions", ref ModSettings.AllowPedReactions);
                 ImGuiIV.DragFloat("ReactionChance", ref ModSettings.ReactionChance);
 
                 ImGuiIV.Spacing();
-                ImGuiIV.Text("Explosion");
+                ImGuiIV.TextUnformatted("Explosion");
                 ImGuiIV.CheckBox("CreateExplosions", ref ModSettings.CreateExplosions);
                 ImGuiIV.Combo("ExplosionType", ref ModSettings.ExplosionType, Consts.ExplosionTypes);
                 ImGuiIV.DragFloat("ExplosionRadius", ref ModSettings.ExplosionRadius, 0.01f);
@@ -1081,11 +1662,11 @@ namespace ProjectThunderIV
 
                 if (scriptedLighting.Count == 0)
                 {
-                    ImGuiIV.Text("There are no scripted lightnings loaded.");
+                    ImGuiIV.TextUnformatted("There are no scripted lightnings loaded.");
                 }
                 else
                 {
-                    ImGuiIV.Text("There are {0} loaded scripted lightnings.", scriptedLighting.Count);
+                    ImGuiIV.TextUnformatted("There are {0} loaded scripted lightnings.", scriptedLighting.Count);
                     ImGuiIV.Spacing();
 
                     for (int i = 0; i < scriptedLighting.Count; i++)
@@ -1135,7 +1716,7 @@ namespace ProjectThunderIV
                                 ImGuiIV.SameLine();
                                 ImGuiIV.DragFloat3(string.Format("TriggerPos##PTSL_{0}", i), ref item.TriggerPos);
                                 ImGuiIV.DragFloat(string.Format("TriggerDistance##PTSL_{0}", i), ref item.TriggerDistance);
-                                ImGuiIV.Text("Is player within trigger distance: {0}", Vector3.Distance(playerPos, item.TriggerPos) < item.TriggerDistance);
+                                ImGuiIV.TextUnformatted("Is player within trigger distance: {0}", Vector3.Distance(playerPos, item.TriggerPos) < item.TriggerDistance);
                             }
 
                             ImGuiIV.Combo(string.Format("TheTrigger##PTSL_{0}", i), ref item.TheTrigger, Consts.TriggerTypes);
@@ -1176,7 +1757,7 @@ namespace ProjectThunderIV
                 && currentWeather == eWeather.WEATHER_LIGHTNING)
             {
 
-                PrepareForLightnigboltSummoning(ThunderstormProgress.Ongoing);
+                PrepareForLightningboltSummoning(ThunderstormProgress.Ongoing);
 
                 return;
             }
@@ -1186,7 +1767,7 @@ namespace ProjectThunderIV
                 && currentWeather == eWeather.WEATHER_LIGHTNING)
             {
 
-                PrepareForLightnigboltSummoning(ThunderstormProgress.Starting);
+                PrepareForLightningboltSummoning(ThunderstormProgress.Starting);
 
                 return;
             }
@@ -1196,68 +1777,26 @@ namespace ProjectThunderIV
                 && currentWeather != eWeather.WEATHER_LIGHTNING)
             {
 
-                PrepareForLightnigboltSummoning(ThunderstormProgress.Ending);
+                PrepareForLightningboltSummoning(ThunderstormProgress.Ending);
 
             }
         }
         private void Main_Tick(object sender, EventArgs e)
         {
             IVCam finalCam = IVCamera.TheFinalCam;
-            IVPed playerPed = IVPed.FromUIntPtr(IVPlayerInfo.FindThePlayerPed());
+            playerPed = IVPed.FromUIntPtr(IVPlayerInfo.FindThePlayerPed());
             playerPos = playerPed.Matrix.Pos;
 
+            if (pedPool == null)
+                pedPool = IVPools.GetPedPool();
+            if (vehiclePool == null)
+                vehiclePool = IVPools.GetVehiclePool();
+
+            // Init blackout class
+            BlackoutSystem.Initialize();
+
             // Do network stuff
-            if (IVNetwork.IsNetworkGameRunning())
-            {
-                // Register network struct
-                if (!networkStructureHandle.IsAllocated && networkStructure == null)
-                {
-                    networkStructure = new LightningBoltSummonConfig();
-
-                    int size = Marshal.SizeOf(networkStructure);
-                    byte[] buffer = new byte[size];
-
-                    networkStructureHandle = GCHandle.Alloc(buffer, GCHandleType.Pinned);
-
-                    Marshal.StructureToPtr(networkStructure, networkStructureHandle.AddrOfPinnedObject(), false);
-                    REGISTER_HOST_BROADCAST_VARIABLES(networkStructureHandle.AddrOfPinnedObject(), size / 4, 29);
-                }
-                else
-                {
-                    // Get host value
-                    networkStructure = Marshal.PtrToStructure<LightningBoltSummonConfig>(networkStructureHandle.AddrOfPinnedObject());
-
-                    // Check if can spawn lightning bolt
-                    if (networkStructure.SpawnNow && !IVNetwork.IsHostingGame && ModSettings.EnableNetworkSync)
-                    {
-                        if (logDebugNetMessages)
-                            Logging.Log("Received spawn lightning command!");
-
-                        if (!wasSpawned)
-                        {
-                            // Summon lightning bolt but only if the player is not the host
-                            SummonLightningbolt(networkStructure.SpawnPosition,
-                                networkStructure.CanHaveBranches,
-                                networkStructure.GrowFromGroundUp,
-                                networkStructure.OverrideLightningSize,
-                                networkStructure.OverrideBoltColor,
-                                networkStructure.OverrideSkyColor,
-                                networkStructure.OverrideSkyBrightness,
-                                false);
-
-                            wasSpawned = true;
-                        }
-                    }
-                    else
-                    {
-                        wasSpawned = false;
-                    }
-                }
-            }
-            else
-            {
-                CleanupNetworkStuff();
-            }
+            HandleNetworkStuff();
 
             // Pause current active sound stream if pause menu is active
             if (IS_PAUSE_MENU_ACTIVE())
@@ -1283,6 +1822,25 @@ namespace ProjectThunderIV
                 }
             }
 
+            // Check if blackout can occur
+            CheckIfExplosionIsNearAnySubstation(false);
+
+            // Update blackout stuff
+            BlackoutSystem.Update();
+
+            // Show random chars
+            if (showRandomChars)
+            {
+                int amount = 24;
+                string finalString = "";
+
+                for (int i = 0; i < amount; i++)
+                    finalString += CHARS[GENERATE_RANDOM_INT_IN_RANGE(0, CHARS.Length)];
+
+                IVGame.ShowSubtitleMessageEx(finalString);
+            }
+
+#if DEBUG
             // Debug stuff
             if (debugKeysEnabled)
             {
@@ -1304,6 +1862,18 @@ namespace ProjectThunderIV
                         SummonLightningbolt(new Vector3(finalCam.Matrix.Pos.Around(distanceToCamera).ToVector2(), ModSettings.SpawnHeight));
                     }
                 }
+                if (ImGuiIV.IsKeyPressed(eImGuiKey.ImGuiKey_K, false))
+                {
+                    ShowSubtitleMessage("Triggering blackout in 5 seconds");
+                    AddDelayedCall(TimeSpan.FromSeconds(5d), () => TriggerBlackout(true), false, null);
+                }
+            }
+#endif
+
+            // Go through main thread queue
+            while (mainThreadQueue.Count != 0)
+            {
+                mainThreadQueue.Dequeue()?.Invoke();
             }
 
             // Go through delayed call list
@@ -1325,8 +1895,11 @@ namespace ProjectThunderIV
             {
                 SoundStream stream = currentSoundStreams[i];
 
-                if (Bass.ChannelIsActive(stream.Handle) == PlaybackState.Stopped)
+                if (Bass.ChannelIsActive(stream.Handle) == PlaybackState.Stopped && !stream.KeepAlive)
+                {
+                    stream.Free();
                     currentSoundStreams.RemoveAt(i);
+                }
                 else
                 {
                     stream.CalculateTargetVolume(gameSfxVolume, IS_INTERIOR_SCENE());
@@ -1336,7 +1909,7 @@ namespace ProjectThunderIV
 
             // Get the timecycle parameters of the lightning weather preset
             lightningTimecycParams = IVTimeCycle.TheTimeCycle.GetTimeCycleParams((int)GET_HOURS_OF_DAY(), (int)eWeather.WEATHER_LIGHTNING);
-
+            
             // Light up the clouds when there is atleast one lightning bolt in the world
             bool doesAtleastOneLightingBoltExists = lightningBolts.Count != 0;
 
@@ -1411,35 +1984,49 @@ namespace ProjectThunderIV
             {
                 LightningBolt lightningBolt = lightningBolts[i];
 
-                Color boltColor = lightningBolt.OverrideBoltColor != Vector3.Zero ? ImGuiIV.FloatRGBToColor(lightningBolt.OverrideBoltColor) : ImGuiIV.FloatRGBToColor(ModSettings.BoltColor);
-
-                // Draw all lightning bolt points of this lightning bolt
-                for (int p = 0; p < lightningBolt.Points.Length; p++)
+                // Only handle lightning bolt drawing logic when both "DoNotRenderOutOfViewLightningBolts" AND "DoNotRenderOutOfViewLights" is NOT set to true.
+                if (!(ModSettings.DoNotRenderOutOfViewLightningBolts && ModSettings.DoNotRenderOutOfViewLights))
                 {
-                    Vector3 point = lightningBolt.Points[p];
+                    Color boltColor = lightningBolt.OverrideBoltColor != Vector3.Zero ? ImGuiIV.FloatRGBToColor(lightningBolt.OverrideBoltColor) : ImGuiIV.FloatRGBToColor(ModSettings.BoltColor);
 
-                    if (point != Vector3.Zero)
+                    // Draw all lightning bolt points of this lightning bolt
+                    for (int p = 0; p < lightningBolt.Points.Length; p++)
                     {
-                        DRAW_CORONA(point, lightningBolt.CoronaSize, 0, 0f, boltColor);
-                        IVShadows.StoreStaticShadow(ModSettings.EnableLightShadow, point, boltColor, ModSettings.LightIntensity, ModSettings.LightRange);
-                    }
-                }
+                        Vector3 point = lightningBolt.Points[p];
 
-                // Draw all branches if there are any
-                if (lightningBolt.Branches != null)
-                {
-                    for (int b = 0; b < lightningBolt.Branches.Count; b++)
-                    {
-                        LightningBoltBranch branch = lightningBolt.Branches[b];
-
-                        for (int p = 0; p < branch.Points.Length; p++)
+                        if (point != Vector3.Zero)
                         {
-                            Vector3 point = branch.Points[p];
+                            bool canPointBeSeen = NativeWorld.IsPositionVisibleOnScreen(point);
 
-                            if (point != Vector3.Zero)
+                            if (!(ModSettings.DoNotRenderOutOfViewLightningBolts && !canPointBeSeen))
+                                CoronaHelper.RenderCorona(29, point, boltColor, lightningBolt.CoronaSize);
+
+                            if (!(ModSettings.DoNotRenderOutOfViewLights && !canPointBeSeen))
+                                IVShadows.StoreStaticShadow(ModSettings.EnableLightShadow, point, boltColor, ModSettings.LightIntensity, ModSettings.LightRange, playerPed.GetUIntPtr().ToUInt32());
+                        }
+                    }
+
+                    // Draw all branches if there are any
+                    if (lightningBolt.Branches != null)
+                    {
+                        for (int b = 0; b < lightningBolt.Branches.Count; b++)
+                        {
+                            LightningBoltBranch branch = lightningBolt.Branches[b];
+
+                            for (int p = 0; p < branch.Points.Length; p++)
                             {
-                                DRAW_CORONA(point, lightningBolt.CoronaSize, 0, 0f, boltColor);
-                                IVShadows.StoreStaticShadow(ModSettings.EnableLightShadow, point, boltColor, ModSettings.LightIntensity, ModSettings.LightRange);
+                                Vector3 point = branch.Points[p];
+
+                                if (point != Vector3.Zero)
+                                {
+                                    bool canPointBeSeen = NativeWorld.IsPositionVisibleOnScreen(point);
+
+                                    if (!(ModSettings.DoNotRenderOutOfViewLightningBolts && !canPointBeSeen))
+                                        CoronaHelper.RenderCorona(29, point, boltColor, lightningBolt.CoronaSize);
+
+                                    if (!(ModSettings.DoNotRenderOutOfViewLights && !canPointBeSeen))
+                                        IVShadows.StoreStaticShadow(ModSettings.EnableLightShadow, point, boltColor, ModSettings.LightIntensity, ModSettings.LightRange, playerPed.GetUIntPtr().ToUInt32());
+                                }
                             }
                         }
                     }
