@@ -23,6 +23,10 @@ using IVSDKDotNet.Enums;
 using IVSDKDotNet.Hooking;
 using static IVSDKDotNet.Native.Natives;
 
+#if DEBUG
+using static ProjectThunderIV.Main;
+#endif
+
 namespace ProjectThunderIV
 {
     public class Main : Script
@@ -1731,6 +1735,218 @@ namespace ProjectThunderIV
             }
         }
 
+        // Meteorite test
+        // cj_proc_stone1
+        // cj_proc_stone2
+        // cj_proc_stone3
+        //public static float MeteorTravelSpeed = 0.5f;
+        //public static float TrailCoronaStartingSize = 1000f;
+        //public static uint AddNewTrailEachXMilliseconds = 50;
+
+        //public List<Meteorite> meteorites;
+        //private static bool didCreateNewTrail;
+
+        //public class MeteoriteTrail
+        //{
+        //    public Vector3 Position;
+        //    public int Temperature;
+
+        //    public MeteoriteTrail(Vector3 pos)
+        //    {
+        //        Position = pos;
+        //        Temperature = 255;
+        //    }
+
+        //    public bool CanBeDeleted()
+        //    {
+        //        return Temperature <= 0;
+        //    }
+
+        //    public void Process()
+        //    {
+        //        if (CanBeDeleted())
+        //            return;
+
+        //        int r = Temperature;
+
+        //        if (r < 0)
+        //            r = 0;
+
+        //        int g = Temperature / 2;
+
+        //        if (g < 0)
+        //            g = 0;
+
+        //        int b = Temperature / 4;
+
+        //        if (b < 0)
+        //            b = 0;
+
+        //        DRAW_CORONA(Position, TrailCoronaStartingSize, 0, 0f, Color.FromArgb(255, r, g, b));
+
+        //        Temperature--;
+        //    }
+        //}
+        //public class Meteorite
+        //{
+        //    public Vector3 SpawnPos;
+        //    public Vector3 TargetPos;
+        //    public Vector3 Direction;
+
+        //    public List<MeteoriteTrail> Trail;
+        //    public float Range;
+
+        //    public int Handle;
+
+        //    public Meteorite(Vector3 spawnPos, Vector3 targetPos)
+        //    {
+        //        // figure out a way to initialize the list with a fixed size so it doesnt need to be resized each time we add a new element to it
+        //        Trail = new List<MeteoriteTrail>();
+
+        //        SpawnPos = spawnPos;
+        //        TargetPos = targetPos;
+        //        Direction = SpawnPos - TargetPos;
+        //    }
+
+        //    public bool Exists()
+        //    {
+        //        if (Handle == 0)
+        //            return false;
+
+        //        return DOES_OBJECT_EXIST(Handle);
+        //    }
+        //    public bool DidHitGround()
+        //    {
+        //        if (!Exists())
+        //            return false;
+
+        //        GET_OBJECT_COORDINATES(Handle, out Vector3 currentCoords);
+
+        //        float groundZ = NativeWorld.GetGroundZ(currentCoords, GroundType.Highest);
+
+        //        return currentCoords.Z < groundZ;
+        //    }
+        //    public bool HasTrail()
+        //    {
+        //        return Trail.Count != 0;
+        //    }
+
+        //    bool didStuff;
+        //    public void AddExplosion()
+        //    {
+        //        if (!didStuff)
+        //        {
+        //            NativeWorld.AddExplosion(GetCurrentPosition(), eExplosion.EXPLOSION_SHIP_DESTROY, 1f, true, false, 10f);
+        //            NativeCamera.GetGameCam().Shake(CameraShakeType.PITCH_UP_DOWN, CameraShakeBehaviour.CONSTANT_PLUS_FADE_IN_OUT, 3000, 0.5f, 0.5f, 0f);
+        //            NativeCamera.GetGameCam().Shake(CameraShakeType.ROLL_LEFT_RIGHT, CameraShakeBehaviour.CONSTANT_PLUS_FADE_IN_OUT, 3000, 0.4f, 0.4f, 0f);
+        //            didStuff = true;
+        //        }
+        //    }
+
+        //    public Vector3 GetCurrentPosition()
+        //    {
+        //        if (!Exists())
+        //            return Vector3.Zero;
+
+        //        GET_OBJECT_COORDINATES(Handle, out Vector3 currentCoords);
+        //        return currentCoords;
+        //    }
+
+        //    public void Spawn()
+        //    {
+        //        if (Handle != 0)
+        //            return;
+
+        //        // Choose random model
+        //        string model = "cj_proc_stone" + GENERATE_RANDOM_INT_IN_RANGE(1, 4).ToString();
+        //        Logging.Log("Choosen model: {0}", model);
+        //        int modelHash = (int)RAGE.AtStringHash(model);
+
+        //        if (!IS_MODEL_IN_CDIMAGE(modelHash))
+        //            return;
+
+        //        if (!HAS_MODEL_LOADED(modelHash))
+        //        {
+        //            IVStreaming.ScriptRequestModel(modelHash);
+        //            IVStreaming.LoadAllRequestedModels(false);
+        //        }
+
+        //        // Create the object
+        //        CREATE_OBJECT(modelHash, SpawnPos, out Handle, true);
+
+        //        if (Handle == 0)
+        //            return;
+
+        //        // Increase draw distance
+        //        IVObject obj = IVObject.FromUIntPtr(IVPools.GetObjectPool().GetAt((uint)Handle));
+        //        obj.DrawDistance = 1000f;
+        //    }
+        //    public void Despawn()
+        //    {
+        //        if (!Exists())
+        //            return;
+
+        //        DELETE_OBJECT(ref Handle);
+        //    }
+
+        //    public void Process()
+        //    {
+        //        if (!Exists())
+        //            return;
+
+        //        GET_OBJECT_COORDINATES(Handle, out Vector3 currentCoords);
+
+        //        Vector3 coords = currentCoords.MoveTowards(TargetPos, MeteorTravelSpeed);
+        //        DRAW_CORONA(coords, 200f, 0, 0f, Color.White);
+
+        //        // Draw trail
+        //        //for (float i = 0.0f; i < 5.0f; i += 0.1f)
+        //        //{
+        //        //    Vector3 coronaPosRaw = coords + i * TrailDistance;
+        //        //    Vector3 coronaPosRotated = coronaPosRaw + new Vector3(i / 10f, i / 10f, i / 10f) * Direction;
+
+        //        //    float coronaSize = DefaultCoronaSize + i * CoronaSizeAddition;
+
+        //        //    DRAW_CORONA(coronaPosRotated, coronaSize, 0, 0f, Color.OrangeRed);
+
+
+        //        //    //DRAW_CORONA((coords + -(i * 5.0f) * TrailDistance) /*+ new Vector3(i / 10f, i / 10f, i / 10f) * Direction*/, DefaultCoronaSize + (i * CoronaSizeAddition), 0, 0f, Color.OrangeRed);
+        //        //}
+
+        //        if (currentCoords != TargetPos)
+        //        {
+        //            SET_OBJECT_COORDINATES(Handle, coords);
+
+        //            // Check if can add trail
+        //            if (IVTimer.TimeInMilliseconds % AddNewTrailEachXMilliseconds <= 10)
+        //            {
+        //                if (!didCreateNewTrail)
+        //                {
+        //                    Trail.Add(new MeteoriteTrail(coords));
+        //                    didCreateNewTrail = true;
+        //                }
+        //            }
+        //            else
+        //            {
+        //                didCreateNewTrail = false;
+        //            }
+        //        }
+
+        //        // Process all trails
+        //        Trail.ForEach(x =>
+        //        {
+        //            if (x.CanBeDeleted())
+        //            {
+        //                Trail.Remove(x);
+        //            }
+        //            else
+        //            {
+        //                x.Process();
+        //            }
+        //        });
+        //    }
+        //}
+
         private void Main_WaitTick(object sender, EventArgs e)
         {
             if (disableRandomLightningBolts)
@@ -1828,10 +2044,55 @@ namespace ProjectThunderIV
             // Update blackout stuff
             BlackoutSystem.Update();
 
+            // Meteorite test
+            //if (ImGuiIV.IsKeyPressed(eImGuiKey.ImGuiKey_O, false))
+            //{
+            //    Meteorite meteorite = new Meteorite(playerPos + new Vector3(0f, 0f, 100f), playerPos.Around(200f));
+            //    meteorite.Spawn();
+
+            //    if (meteorite.Exists())
+            //        meteorites.Add(meteorite);
+            //}
+            //if (ImGuiIV.IsKeyPressed(eImGuiKey.ImGuiKey_P, false))
+            //{
+            //    meteorites.ForEach(x =>
+            //    {
+   
+            //        x.Despawn();
+            //    });
+            //    meteorites.Clear();
+            //}
+
+            //meteorites.ForEach(x =>
+            //{
+            //    // If meteorite doesnt exists anymore we keep checking if all the trails are gone
+            //    //if (!x.Exists())
+            //    //{
+            //    //    if (!x.HasTrail())
+            //    //        meteorites.Remove(x);
+
+            //    //    return;
+            //    //}
+
+            //    if (x.DidHitGround())
+            //    {
+            //        Vector3 pos = x.GetCurrentPosition();
+
+            //        x.AddExplosion();
+            //        x.Range += 10f;
+            //        IVShadows.StoreStaticShadow(false, pos, Color.White, x.Range * 10f, x.Range * 10f);
+            //        DRAW_CORONA(pos, x.Range * 150f, 0, 0f, Color.White);
+            //    }
+            //    else
+            //    {
+            //        x.Process();
+            //    }
+            //});
+
             // Show random chars
             if (showRandomChars)
             {
-                int amount = 24;
+                const int amount = 24;
                 string finalString = "";
 
                 for (int i = 0; i < amount; i++)
